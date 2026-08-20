@@ -29,6 +29,10 @@ php install.php serve --public-url=https://app.example --listen=127.0.0.1:8080
 php install.php status
 ```
 
+If the signed UI cannot load, the fallback page displays a stable error code and diagnostic ID.
+Run `php install.php status` on the server to see the last sanitized diagnostic, then use the
+[error catalog](docs/errors.md). Do not bypass signature or asset-hash failures.
+
 Changing `config/release.php` does not change an already compiled `install.php`. After pinning the API public key, always run `php build/compile.php` and deploy the newly generated single file. The matching private key remains only in the `scriptbox-api` production environment. The complete Docker release sequence is documented in `scriptbox-api/docs/installer-production-release.md` when the three repositories are checked out as siblings.
 
 For recovery run `php install.php recover`. Normal failures roll back; uncertain cleanup becomes `recovery_required` and blocks another install.

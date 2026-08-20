@@ -16,7 +16,10 @@ if (PHP_SAPI === 'cli') {
         exit(0);
     }
     if ($command === 'status') {
-        fwrite(STDOUT, json_encode($state->read('status', ['state' => 'idle']), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+        $status = $state->read('status', ['state' => 'idle']);
+        $lastError = $state->read('last_error');
+        if ($lastError !== []) $status['last_error'] = $lastError;
+        fwrite(STDOUT, json_encode($status, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
         exit(0);
     }
     if ($command === 'recover') {

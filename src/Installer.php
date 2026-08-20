@@ -792,10 +792,10 @@ final class Application
             };
             $this->json(['success' => true, 'data' => $data, 'error' => null]);
         } catch (Throwable $error) {
+            $diagnostic = $this->recordDiagnostic($error);
             $status = $error instanceof InstallerException ? max(400, min(599, $error->getCode())) : 500;
-            $code = $error instanceof InstallerException ? $error->stableCode : 'SERVER_ERROR';
             $message = $status >= 500 ? 'Installer operation failed' : $error->getMessage();
-            $this->json(['success' => false, 'data' => null, 'error' => ['code' => $code, 'message' => $message]], $status);
+            $this->json(['success' => false, 'data' => null, 'error' => ['code' => $diagnostic['code'], 'message' => $message, 'diagnostic_id' => $diagnostic['diagnostic_id']]], $status);
         }
     }
 
@@ -832,7 +832,7 @@ final class Application
 
     private function shell(): void
     {
-        $links = ''; $scripts = '';
+        $links = ''; $scripts = ''; $diagnostic = null;
         try {
             $bootstrap = $this->assets->bootstrap();
             foreach (($bootstrap['ui']['assets'] ?? []) as $asset) {
@@ -841,9 +841,29 @@ final class Application
                 if ($asset['type'] === 'css') $links .= '<link rel="stylesheet" href="' . htmlspecialchars($local, ENT_QUOTES) . '">';
                 else $scripts .= '<script type="module" src="' . htmlspecialchars($local, ENT_QUOTES) . '"></script>';
             }
-        } catch (Throwable) {}
+        } catch (Throwable $error) { $diagnostic = $this->recordDiagnostic($error); }
+        $fallback = '<main><h1>ScriptBox Installer</h1><p>The signed installer UI is unavailable.</p>';
+        if ($diagnostic !== null) {
+            $fallback .= '<section role="alert"><p><strong>Error code:</strong> <code>' . htmlspecialchars($diagnostic['code'], ENT_QUOTES) . '</code></p>'
+                . '<p><strong>Details:</strong> ' . htmlspecialchars($diagnostic['message'], ENT_QUOTES) . '</p>'
+                . '<p><strong>Diagnostic ID:</strong> <code>' . htmlspecialchars($diagnostic['diagnostic_id'], ENT_QUOTES) . '</code></p></section>';
+        }
+        $fallback .= '<p>Run <code>php install.php status</code> to view the last recorded diagnostic.</p></main>';
         header('Content-Type: text/html; charset=utf-8');
-        echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ScriptBox Installer</title>' . $links . '</head><body><div id="root"><main><h1>ScriptBox Installer</h1><p>The signed installer UI is unavailable. Configure pinned signing keys or use the CLI status command.</p></main></div>' . $scripts . '</body></html>';
+        echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ScriptBox Installer</title>' . $links . '</head><body><div id="root">' . $fallback . '</div>' . $scripts . '</body></html>';
+    }
+
+    private function recordDiagnostic(Throwable $error): array
+    {
+        $diagnostic = [
+            'diagnostic_id' => bin2hex(random_bytes(8)),
+            'timestamp' => gmdate(DATE_ATOM),
+            'code' => $error instanceof InstallerException ? $error->stableCode : 'SERVER_ERROR',
+            'message' => $error instanceof InstallerException ? $error->getMessage() : 'An unexpected installer error occurred',
+        ];
+        try { $this->state->write('last_error', $diagnostic); } catch (Throwable) {}
+        error_log(sprintf('ScriptBox installer diagnostic %s [%s]: %s', $diagnostic['diagnostic_id'], $diagnostic['code'], $diagnostic['message']));
+        return $diagnostic;
     }
 
     private function asset(string $path): void

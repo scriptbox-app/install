@@ -10,6 +10,9 @@ use ScriptBox\Installer\StateStore;
 use ScriptBox\Installer\Router;
 use ScriptBox\Installer\Preflight;
 use ScriptBox\Installer\ConfigurationWriter;
+use ScriptBox\Installer\ApiClient;
+use ScriptBox\Installer\Application;
+use ScriptBox\Installer\AssetManager;
 
 $tests = [];
 function test(string $name, callable $callback): void { global $tests; $tests[$name] = $callback; }
@@ -43,6 +46,24 @@ test('committed installer checksum and release metadata match the compiled artif
     expect(($checksumParts[0] ?? '') === $actualHash, 'install.php.sha256 is stale');
     expect(($metadata['installer_sha256'] ?? '') === $actualHash, 'release.json installer hash is stale');
     expect(($metadata['signing_key_ids'] ?? []) === array_keys((require $root . '/config/release.php')['public_keys']), 'release signing key ids are stale');
+});
+
+test('installer shell reports and records a safe bootstrap diagnostic', function (): void {
+    $root = sys_get_temp_dir() . '/scriptbox-diagnostic-' . bin2hex(random_bytes(4));
+    $state = new StateStore($root);
+    $api = new ApiClient('https://example.invalid/installer/v1');
+    $assets = new AssetManager($api, $state, []);
+    $application = new Application($api, $state, $assets, $root, []);
+    $_SERVER['SCRIPT_NAME'] = '/install.php';
+    ob_start();
+    $application->handle('GET', '/', [], '');
+    $html = (string)ob_get_clean();
+    $diagnostic = $state->read('last_error');
+    expect(str_contains($html, 'SIGNING_KEYS_NOT_CONFIGURED'), 'Browser response hides the stable error code');
+    expect(str_contains($html, 'This release has no pinned production signing keys'), 'Browser response hides the safe error message');
+    expect(($diagnostic['code'] ?? '') === 'SIGNING_KEYS_NOT_CONFIGURED', 'Diagnostic was not recorded');
+    expect(isset($diagnostic['diagnostic_id'], $diagnostic['timestamp']), 'Diagnostic metadata is incomplete');
+    $state->removeAll();
 });
 
 test('state is private, atomic, and redacts secrets', function (): void {
