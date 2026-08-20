@@ -881,6 +881,17 @@ define('SCRIPTBOX_COMPILED_RELEASE', array (
   'api_base_url' => 'https://api.scriptbox.app/installer/v1',
   'public_keys' => 
   array (
+    'installer-root-2026-01' => '-----BEGIN PUBLIC KEY-----
+MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEA7PQG2KVVS/joy1zsvM56
+YkKSzya8FTe4GFrNEGqATccdg24sNm/kfq6/V9FFoidX3ljoPf3/qqXEiZKEf1wG
+yzyfospnd09aMVqjQGD0TBpydUEPxz2w30I8SjeGMvHwtjbjx6y9FsrpDMiw/8KT
+iPRMK37QpjXGqFTOW0eVMYd/HClCMyjkqjJQLek31d3mmCihaWH/usOBwdXxlUBK
+xTKPQ290WP8Z4xnwqOhzKU0ZGoy8SmuEOdc6EdwqEW41UY4jb3YsMU8dZBxPeG9K
+y6OiB+K1aCQevo7pnl5e3f4jkm4pB3P+vbaHt3DKzBkUg6Y9RFhRazPeiSZQjA9v
+RMWpXCJJqHhoJntDTE/T1noRWfNjfXNqMg3Id8hITh+6kEmPmR2L7/tDyLIEcD/3
+eJg/etjCwi+Yru2GeRRdBGd8INTS9vhe1wK8eRvdujg31i8LHgw83xJIbxpYZF9m
+0J2dOlk170AtOZPlpC2I0hCF4firiJVW22ayTaAsjJVVAgMBAAE=
+-----END PUBLIC KEY-----',
   ),
 ));
 
