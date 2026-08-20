@@ -13,6 +13,7 @@ use ScriptBox\Installer\ConfigurationWriter;
 use ScriptBox\Installer\ApiClient;
 use ScriptBox\Installer\Application;
 use ScriptBox\Installer\AssetManager;
+use ScriptBox\Installer\OwnershipProof;
 
 $tests = [];
 function test(string $name, callable $callback): void { global $tests; $tests[$name] = $callback; }
@@ -88,6 +89,18 @@ test('state is private, atomic, and redacts secrets', function (): void {
     $store->removeAll();
 });
 
+test('ownership proof uses the installer route and private state', function (): void {
+    $root = sys_get_temp_dir() . '/scriptbox-proof-' . bin2hex(random_bytes(4));
+    $state = new StateStore($root);
+    $proofs = new OwnershipProof($state, '/install/install.php');
+    $proof = $proofs->create();
+    expect(str_starts_with($proof['path'], '/install/install.php/.well-known/scriptbox-installer/'));
+    expect($proofs->read($proof['id']) === $proof['value']);
+    $proofs->remove($proof['id']);
+    expect($proofs->read($proof['id']) === null);
+    $state->removeAll();
+});
+
 test('archive path validation rejects traversal, absolute paths, and symlinks', function (): void {
     expect(ArchiveInspector::isSafePath('payload/index.php'));
     expect(!ArchiveInspector::isSafePath('../index.php'));
@@ -119,6 +132,10 @@ test('preflight reports PHP and database adapters without phpinfo or secrets', f
     expect(isset($result['extensions']) && is_array($result['extensions']));
     expect(!array_key_exists('phpinfo', $result));
     expect(isset($result['databases']['sqlite']));
+});
+
+test('preflight blocks a target that PHP-FPM cannot write', function (): void {
+    expectThrows(fn () => Preflight::assertWritableTarget('/path/that/does/not/exist'), 'not writable');
 });
 
 test('configuration writers escape dotenv, JSON, and PHP array values', function (): void {

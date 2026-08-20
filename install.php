@@ -123,6 +123,12 @@ final class StateStore
 
     public function path(string $name): string { return $this->file($name); }
 
+    public function remove(string $name): void
+    {
+        $file = $this->file($name);
+        if (is_file($file) && !unlink($file)) throw new InstallerException('Unable to remove installer state', 'STATE_WRITE_FAILED', 500);
+    }
+
     public function removeAll(): void
     {
         if (!is_dir($this->root) || is_link($this->root)) return;
@@ -144,6 +150,45 @@ final class StateStore
             $clean[$key] = is_array($item) ? $this->redact($item) : $item;
         }
         return $clean;
+    }
+}
+
+final class OwnershipProof
+{
+    private readonly string $scriptPath;
+
+    public function __construct(private readonly StateStore $state, string $scriptPath)
+    {
+        $path = parse_url($scriptPath, PHP_URL_PATH);
+        if (!is_string($path) || !preg_match('#^/(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+$#', $path)) {
+            throw new InstallerException('Installer URL path is invalid', 'OWNERSHIP_PROOF_PATH_INVALID');
+        }
+        $this->scriptPath = rtrim($path, '/');
+    }
+
+    public function create(): array
+    {
+        $id = bin2hex(random_bytes(12));
+        $value = bin2hex(random_bytes(32));
+        $this->state->write('proof_' . $id, ['id' => $id, 'value' => $value]);
+        return [
+            'id' => $id,
+            'value' => $value,
+            'digest' => hash('sha256', $value),
+            'path' => $this->scriptPath . '/.well-known/scriptbox-installer/' . $id,
+        ];
+    }
+
+    public function read(string $id): ?string
+    {
+        if (!preg_match('/^[a-f0-9]{24}$/', $id)) return null;
+        $stored = $this->state->read('proof_' . $id);
+        return isset($stored['id'], $stored['value']) && hash_equals($id, (string)$stored['id']) ? (string)$stored['value'] : null;
+    }
+
+    public function remove(string $id): void
+    {
+        if (preg_match('/^[a-f0-9]{24}$/', $id)) $this->state->remove('proof_' . $id);
     }
 }
 
@@ -225,6 +270,13 @@ final class Router
 
 final class Preflight
 {
+    public static function assertWritableTarget(string $target): void
+    {
+        if (!is_dir($target) || !is_writable($target)) {
+            throw new InstallerException('The installation directory is not writable by PHP-FPM', 'TARGET_NOT_WRITABLE');
+        }
+    }
+
     public static function capabilities(string $target): array
     {
         $extensions = array_values(array_intersect(
@@ -822,18 +874,17 @@ final class Application
     private function createSession(array $body): array
     {
         if (($body['consent'] ?? false) !== true) throw new InstallerException('Telemetry consent is required', 'CONSENT_REQUIRED');
+        Preflight::assertWritableTarget($this->target);
         $origin = (string)($body['origin'] ?? '');
-        $proofId = bin2hex(random_bytes(12)); $proof = bin2hex(random_bytes(32));
-        $directory = $this->target . '/.well-known/scriptbox-installer';
-        if (!is_dir($directory) && !mkdir($directory, 0755, true) && !is_dir($directory)) throw new InstallerException('Cannot create ownership proof', 'OWNERSHIP_PROOF_WRITE_FAILED');
-        file_put_contents($directory . '/' . $proofId, $proof, LOCK_EX);
+        $proofs = new OwnershipProof($this->state, (string)($_SERVER['SCRIPT_NAME'] ?? '/install.php'));
+        $proof = $proofs->create();
         try {
             $data = $this->api->request('POST', '/sessions/verify', [
-                'install_id' => $_SESSION['install_id'], 'origin' => $origin, 'proof_id' => $proofId,
-                'proof_digest' => hash('sha256', $proof), 'consent' => true,
+                'install_id' => $_SESSION['install_id'], 'origin' => $origin, 'proof_id' => $proof['id'],
+                'proof_digest' => $proof['digest'], 'proof_path' => $proof['path'], 'consent' => true,
                 'policy_version' => (string)($body['policy_version'] ?? '2026-08-19'),
             ]);
-        } finally { @unlink($directory . '/' . $proofId); }
+        } finally { $proofs->remove($proof['id']); }
         $_SESSION['api_token'] = $data['token']; $_SESSION['origin'] = $origin;
         session_regenerate_id(true);
         return ['verified' => true, 'expires_in' => $data['expires_in'] ?? 900];
@@ -888,9 +939,10 @@ final class Application
 
     private function ownershipProof(string $path): void
     {
-        $id = basename($path); $file = $this->target . '/.well-known/scriptbox-installer/' . $id;
-        if (!is_file($file)) throw new InstallerException('Ownership proof not found', 'OWNERSHIP_PROOF_NOT_FOUND', 404);
-        header('Content-Type: text/plain; charset=utf-8'); header('Cache-Control: no-store'); readfile($file);
+        $id = basename($path);
+        $proof = (new OwnershipProof($this->state, (string)($_SERVER['SCRIPT_NAME'] ?? '/install.php')))->read($id);
+        if ($proof === null) throw new InstallerException('Ownership proof not found', 'OWNERSHIP_PROOF_NOT_FOUND', 404);
+        header('Content-Type: text/plain; charset=utf-8'); header('Cache-Control: no-store'); echo $proof;
     }
 
     private function csrf(array $headers): void
