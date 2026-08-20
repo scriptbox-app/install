@@ -66,6 +66,17 @@ test('installer shell reports and records a safe bootstrap diagnostic', function
     $state->removeAll();
 });
 
+test('asset download diagnostics expose safe HTTP and transport status', function (): void {
+    expect(
+        AssetManager::downloadFailureMessage(200, 28) === 'UI asset download failed (HTTP 200, cURL 28: transfer timed out)',
+        'Timed-out asset diagnostics are not actionable'
+    );
+    expect(
+        AssetManager::downloadFailureMessage(503, 0) === 'UI asset download failed (HTTP 503)',
+        'HTTP asset diagnostics are not actionable'
+    );
+});
+
 test('state is private, atomic, and redacts secrets', function (): void {
     $root = sys_get_temp_dir() . '/scriptbox-test-' . bin2hex(random_bytes(4));
     $store = new StateStore($root);

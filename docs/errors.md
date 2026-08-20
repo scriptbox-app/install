@@ -5,6 +5,7 @@
 | `SIGNING_KEYS_NOT_CONFIGURED` | Build an approved keyed release |
 | `SIGNATURE_INVALID` | Stop and audit publishing/key rotation |
 | `HASH_MISMATCH` | Republish the UI/package with a new immutable version; never edit signed hashes manually |
+| `ASSET_DOWNLOAD_FAILED` | Check the reported HTTP/cURL status, then verify the published asset size and reverse-proxy streaming |
 | `PREFLIGHT_FAILED` | Correct PHP/extension/filesystem capability |
 | `TARGET_NOT_EMPTY` / `DATABASE_NOT_EMPTY` | Use an empty target/database |
 | `PACKAGE_*` / `MANIFEST_*` | Fix and republish the package |

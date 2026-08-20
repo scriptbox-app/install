@@ -713,6 +713,21 @@ final class AssetManager
 {
     public function __construct(private readonly ApiClient $api, private readonly StateStore $state, private readonly array $publicKeys) {}
 
+    public static function downloadFailureMessage(int $httpStatus, int $curlError): string
+    {
+        $status = $httpStatus > 0 ? 'HTTP ' . $httpStatus : 'no HTTP response';
+        if ($curlError === 0) return 'UI asset download failed (' . $status . ')';
+        $reason = match ($curlError) {
+            6 => 'host resolution failed',
+            7 => 'connection failed',
+            18 => 'incomplete transfer',
+            28 => 'transfer timed out',
+            35, 60 => 'TLS verification failed',
+            default => 'transport error',
+        };
+        return 'UI asset download failed (' . $status . ', cURL ' . $curlError . ': ' . $reason . ')';
+    }
+
     public function bootstrap(bool $refresh = false): array
     {
         $cached = $this->state->read('bootstrap');
@@ -751,8 +766,8 @@ final class AssetManager
         $output = fopen($temporary, 'wb');
         $handle = curl_init($url);
         curl_setopt_array($handle, [CURLOPT_FILE => $output, CURLOPT_FOLLOWLOCATION => true, CURLOPT_MAXREDIRS => 1, CURLOPT_TIMEOUT => 60, CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2, CURLOPT_PROTOCOLS => CURLPROTO_HTTPS, CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS]);
-        $ok = curl_exec($handle); $status = curl_getinfo($handle, CURLINFO_RESPONSE_CODE); curl_close($handle); fclose($output);
-        if ($ok === false || $status < 200 || $status >= 300) { @unlink($temporary); throw new InstallerException('UI asset download failed', 'ASSET_DOWNLOAD_FAILED', 502); }
+        $ok = curl_exec($handle); $status = curl_getinfo($handle, CURLINFO_RESPONSE_CODE); $curlError = curl_errno($handle); curl_close($handle); fclose($output);
+        if ($ok === false || $status < 200 || $status >= 300) { @unlink($temporary); throw new InstallerException(self::downloadFailureMessage($status, $curlError), 'ASSET_DOWNLOAD_FAILED', 502); }
         Crypto::verifyFile($temporary, $hash, $bytes); chmod($temporary, 0600); rename($temporary, $file);
     }
 }

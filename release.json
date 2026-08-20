@@ -1,9 +1,9 @@
 {
     "version": "1.0.0-dev",
     "protocol": "installer-v1",
-    "installer_sha256": "f335ae247d3282d2093768086e109fca640f1d2a1a296276e29df63074d2bfde",
+    "installer_sha256": "357e3bfde85427b7f411f3007a595a557ffc28cebb10ac828fadadb967f3448d",
     "signing_key_ids": [
         "installer-root-2026-01"
     ],
-    "created_at": "2026-08-20T13:57:52+00:00"
+    "created_at": "2026-08-20T14:27:25+00:00"
 }
