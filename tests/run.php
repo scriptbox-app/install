@@ -26,12 +26,23 @@ test('signed bootstrap verifies RS256, key id, and expiry', function (): void {
     $pair = openssl_pkey_new(['private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
     openssl_pkey_export($pair, $private);
     $public = openssl_pkey_get_details($pair)['key'];
-    $payload = Crypto::base64UrlEncode(json_encode(['issued_at' => 900, 'expires_at' => 1100, 'protocol' => ['minimum' => '1.0.0']], JSON_THROW_ON_ERROR));
-    openssl_sign($payload, $signature, $private, OPENSSL_ALGO_SHA256);
+    $payloadBytes = json_encode(['issued_at' => 900, 'expires_at' => 1100, 'protocol' => ['minimum' => '1.0.0']], JSON_THROW_ON_ERROR);
+    $payload = Crypto::base64UrlEncode($payloadBytes);
+    openssl_sign($payloadBytes, $signature, $private, OPENSSL_ALGO_SHA256);
     $decoded = Crypto::verifyEnvelope(['kid' => 'test', 'alg' => 'RS256', 'payload' => $payload, 'signature' => Crypto::base64UrlEncode($signature)], ['test' => $public], 1000);
     expect($decoded['expires_at'] === 1100);
     expectThrows(fn () => Crypto::verifyEnvelope(['kid' => 'other', 'alg' => 'RS256', 'payload' => $payload, 'signature' => Crypto::base64UrlEncode($signature)], ['test' => $public], 1000), 'unknown');
     expectThrows(fn () => Crypto::verifyEnvelope(['kid' => 'test', 'alg' => 'RS256', 'payload' => $payload, 'signature' => Crypto::base64UrlEncode($signature)], ['test' => $public], 1200), 'expired');
+});
+
+test('committed installer checksum and release metadata match the compiled artifact', function (): void {
+    $root = dirname(__DIR__);
+    $actualHash = hash_file('sha256', $root . '/install.php');
+    $checksumParts = preg_split('/\s+/', trim((string)file_get_contents($root . '/install.php.sha256')));
+    $metadata = json_decode((string)file_get_contents($root . '/release.json'), true, 32, JSON_THROW_ON_ERROR);
+    expect(($checksumParts[0] ?? '') === $actualHash, 'install.php.sha256 is stale');
+    expect(($metadata['installer_sha256'] ?? '') === $actualHash, 'release.json installer hash is stale');
+    expect(($metadata['signing_key_ids'] ?? []) === array_keys((require $root . '/config/release.php')['public_keys']), 'release signing key ids are stale');
 });
 
 test('state is private, atomic, and redacts secrets', function (): void {

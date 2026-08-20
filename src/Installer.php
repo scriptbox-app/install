@@ -35,11 +35,12 @@ final class Crypto
         $kid = (string)($envelope['kid'] ?? '');
         if (!isset($publicKeys[$kid])) throw new InstallerException('Unknown signing key', 'SIGNING_KEY_UNKNOWN');
         $payload = (string)($envelope['payload'] ?? '');
+        $payloadBytes = self::base64UrlDecode($payload);
         $signature = self::base64UrlDecode((string)($envelope['signature'] ?? ''));
-        if (openssl_verify($payload, $signature, $publicKeys[$kid], OPENSSL_ALGO_SHA256) !== 1) {
+        if (openssl_verify($payloadBytes, $signature, $publicKeys[$kid], OPENSSL_ALGO_SHA256) !== 1) {
             throw new InstallerException('Configuration signature is invalid', 'SIGNATURE_INVALID');
         }
-        $decoded = json_decode(self::base64UrlDecode($payload), true, 32, JSON_THROW_ON_ERROR);
+        $decoded = json_decode($payloadBytes, true, 32, JSON_THROW_ON_ERROR);
         $clock = $now ?? time();
         if (!is_array($decoded) || ($requireExpiry && (!isset($decoded['expires_at']) || (int)$decoded['expires_at'] < $clock))) {
             throw new InstallerException('Signed configuration has expired', 'CONFIG_EXPIRED');
