@@ -18,7 +18,7 @@ This public checklist is for the hosting administrator deploying `install.php`. 
 
 - [ ] Open the installer only through HTTPS.
 - [ ] Confirm the runtime panel reports supported PHP, required extensions, and `target: writable`.
-- [ ] Enter only the origin (`https://example.com`), without `/install.php` or another path.
+- [ ] Confirm the read-only detected origin matches the deployed HTTPS domain; no browser domain input is required.
 - [ ] Read the privacy notice before consenting.
 - [ ] Select only a free package marked compatible with the detected runtime/database.
 - [ ] Reconfirm that the database is empty before submission.

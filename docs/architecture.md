@@ -46,12 +46,14 @@ GET install.php
   → verify size and SHA-256
   → serve verified assets from same-origin immutable routes
   → UI requests local runtime capabilities
+  → UI renders the anonymous catalog and query-string detail route immediately
 ```
 
 ## Ownership sequence
 
 ```text
-UI submits HTTPS origin and consent
+UI submits consent after the user presses Install
+  → install.php derives the HTTPS origin from CLI configuration, a trusted proxy, or the validated request
   → install.php checks target writability
   → creates random proof in private state
   → sends proof ID, digest, and same-origin installer path to API
@@ -62,7 +64,7 @@ UI submits HTTPS origin and consent
   → install.php deletes the proof
 ```
 
-Both `/install.php` and `/install/install.php` deployments use this flow. The user enters only the origin, such as `https://example.com`, not the installer path.
+Both `/install.php` and `/install/install.php` deployments use this flow. The browser cannot supply or edit the origin.
 
 ## Installation sequence
 

@@ -14,6 +14,7 @@ use ScriptBox\Installer\ApiClient;
 use ScriptBox\Installer\Application;
 use ScriptBox\Installer\AssetManager;
 use ScriptBox\Installer\OwnershipProof;
+use ScriptBox\Installer\OriginDetector;
 
 $tests = [];
 function test(string $name, callable $callback): void { global $tests; $tests[$name] = $callback; }
@@ -122,8 +123,50 @@ test('router exposes only fixed local API operations', function (): void {
     expect(Router::resolve('GET', '/api/runtime') === 'runtime');
     expect(Router::resolve('POST', '/api/catalog/search') === 'catalog_search');
     expect(Router::resolve('GET', '/api/catalog/SCR-001') === 'catalog_detail');
+    expect(Router::resolve('GET', '/api/media/header.payload.signature') === 'catalog_media');
+    expect(Router::resolve('GET', '/assets/' . str_repeat('a', 64) . '.json') === 'asset');
     expectThrows(fn () => Router::resolve('POST', '/api/proxy'), 'not found');
     expectThrows(fn () => Router::resolve('GET', '/api/fetch?url=https://evil.example'), 'not found');
+});
+
+test('origin detection uses direct HTTPS without trusting browser input', function (): void {
+    $root = sys_get_temp_dir() . '/scriptbox-origin-' . bin2hex(random_bytes(4));
+    $state = new StateStore($root);
+    $detected = OriginDetector::detect([
+        'HTTPS' => 'on', 'HTTP_HOST' => 'install.example.com', 'SERVER_PORT' => '443', 'REMOTE_ADDR' => '198.51.100.10',
+    ], $state, '');
+    expect($detected['origin'] === 'https://install.example.com');
+    expect($detected['source'] === 'request');
+    expectThrows(fn () => OriginDetector::detect(['HTTPS' => 'off', 'HTTP_HOST' => 'install.example.com'], $state, ''), 'https');
+    $state->removeAll();
+});
+
+test('origin detection rejects request-host userinfo', function (): void {
+    $root = sys_get_temp_dir() . '/scriptbox-origin-userinfo-' . bin2hex(random_bytes(4));
+    $state = new StateStore($root);
+    expectThrows(fn () => OriginDetector::detect(['HTTPS' => 'on', 'HTTP_HOST' => 'attacker@install.example.com', 'REMOTE_ADDR' => '203.0.113.5'], $state, ''), 'HTTPS origin');
+    $state->removeAll();
+});
+
+test('origin detection accepts forwarded HTTPS only from a trusted proxy', function (): void {
+    $root = sys_get_temp_dir() . '/scriptbox-proxy-' . bin2hex(random_bytes(4));
+    $state = new StateStore($root);
+    $server = ['HTTPS' => 'off', 'HTTP_HOST' => 'internal.local', 'REMOTE_ADDR' => '10.0.0.5', 'HTTP_X_FORWARDED_PROTO' => 'https', 'HTTP_X_FORWARDED_HOST' => 'public.example.com'];
+    $detected = OriginDetector::detect($server, $state, '10.0.0.0/24');
+    expect($detected['origin'] === 'https://public.example.com');
+    expect($detected['source'] === 'trusted_proxy');
+    expectThrows(fn () => OriginDetector::detect($server, $state, '10.1.0.0/24'), 'https');
+    $state->removeAll();
+});
+
+test('origin detection gives configured CLI public URL precedence', function (): void {
+    $root = sys_get_temp_dir() . '/scriptbox-cli-origin-' . bin2hex(random_bytes(4));
+    $state = new StateStore($root);
+    $state->write('server', ['public_url' => 'https://cli.example.com']);
+    $detected = OriginDetector::detect(['HTTPS' => 'off', 'HTTP_HOST' => 'internal.local'], $state, '');
+    expect($detected['origin'] === 'https://cli.example.com');
+    expect($detected['source'] === 'cli');
+    $state->removeAll();
 });
 
 test('preflight reports PHP and database adapters without phpinfo or secrets', function (): void {

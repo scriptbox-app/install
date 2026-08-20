@@ -36,16 +36,17 @@ Unknown keys, unsupported algorithms, invalid signatures, expired/future configu
 
 ## Session and ownership
 
-The browser sends consent and the origin to local `install.php`. PHP creates a random proof in private state and sends its ID, digest, and strictly validated same-origin `proof_path` to the API. This supports both `/install.php` and subdirectory `/install/install.php` without placing proof files inside the application target.
+The browser sends only explicit consent and the policy version to local `install.php`. PHP derives the origin from a configured CLI public URL, trusted proxy headers, or the validated direct HTTPS request. It then creates a random proof in private state and sends its ID, digest, and strictly validated same-origin `proof_path` to the API. This supports both `/install.php` and subdirectory `/install/install.php` without placing proof files inside the application target.
 
 The API validates a public HTTPS hostname, rejects redirects and private/reserved addresses, pins DNS for the proof request, checks TLS, fetches the exact proof path, and compares its digest. Session tokens expire after 15 minutes and are bound to installation, origin, and action scopes.
 
 ## Catalog, license, and artifact flow
 
 ```text
-POST /sessions/verify
 POST /catalog/search
 GET  /catalog/{scriptId}
+GET  /catalog/media/{mediaId}
+POST /sessions/verify
 POST /licenses/free
 POST /artifacts/{artifactId}/authorize
 GET  /downloads/{token}

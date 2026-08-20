@@ -261,10 +261,62 @@ final class Router
         ];
         $key = strtoupper($method) . ' ' . $path;
         if (isset($fixed[$key])) return $fixed[$key];
+        if (strtoupper($method) === 'GET' && preg_match('#^/api/media/([A-Za-z0-9._-]{20,2048})$#', $path)) return 'catalog_media';
         if (strtoupper($method) === 'GET' && preg_match('#^/api/catalog/([A-Za-z0-9._-]{1,64})$#', $path)) return 'catalog_detail';
         if (strtoupper($method) === 'GET' && preg_match('#^/\.well-known/scriptbox-installer/([A-Za-z0-9-]{8,100})$#', $path)) return 'ownership_proof';
-        if (strtoupper($method) === 'GET' && preg_match('#^/assets/[a-f0-9]{64}\.(?:js|css)$#', $path)) return 'asset';
+        if (strtoupper($method) === 'GET' && preg_match('#^/assets/[a-f0-9]{64}\.(?:js|css|json)$#', $path)) return 'asset';
         throw new InstallerException('Route not found', 'ROUTE_NOT_FOUND', 404);
+    }
+}
+
+final class OriginDetector
+{
+    public static function detect(array $server, StateStore $state, string $trustedProxies): array
+    {
+        $configured = $state->read('server');
+        if (isset($configured['public_url'])) return ['origin' => self::validate((string)$configured['public_url']), 'source' => 'cli'];
+        $remote = (string)($server['REMOTE_ADDR'] ?? '');
+        if (self::trusted($remote, $trustedProxies)) {
+            $proto = (string)($server['HTTP_X_FORWARDED_PROTO'] ?? '');
+            $host = (string)($server['HTTP_X_FORWARDED_HOST'] ?? '');
+            if ($proto === 'https' && !str_contains($host, ',')) return ['origin' => self::validate('https://' . $host), 'source' => 'trusted_proxy'];
+        }
+        $https = strtolower((string)($server['HTTPS'] ?? ''));
+        $scheme = in_array($https, ['on', '1'], true) || strtolower((string)($server['REQUEST_SCHEME'] ?? '')) === 'https' ? 'https' : 'http';
+        if ($scheme !== 'https') throw new InstallerException('A public HTTPS origin is required', 'ORIGIN_INVALID');
+        return ['origin' => self::validate('https://' . (string)($server['HTTP_HOST'] ?? '')), 'source' => 'request'];
+    }
+
+    private static function validate(string $origin): string
+    {
+        $url = parse_url($origin);
+        $host = strtolower((string)($url['host'] ?? ''));
+        if (!is_array($url) || ($url['scheme'] ?? '') !== 'https' || $host === '' || isset($url['user']) || isset($url['pass']) || isset($url['query']) || isset($url['fragment']) || !in_array($url['path'] ?? '', ['', '/'], true)) {
+            throw new InstallerException('A public HTTPS origin is required', 'ORIGIN_INVALID');
+        }
+        if (filter_var($host, FILTER_VALIDATE_IP) !== false || strlen($host) > 253 || !preg_match('/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/', $host)) {
+            throw new InstallerException('The installer host is invalid', 'ORIGIN_INVALID');
+        }
+        $port = isset($url['port']) ? (int)$url['port'] : 443;
+        if ($port < 1 || $port > 65535) throw new InstallerException('The installer port is invalid', 'ORIGIN_INVALID');
+        return 'https://' . $host . ($port === 443 ? '' : ':' . $port);
+    }
+
+    private static function trusted(string $remote, string $configured): bool
+    {
+        $address = @inet_pton($remote);
+        if ($address === false) return false;
+        foreach (array_filter(array_map('trim', explode(',', $configured))) as $range) {
+            [$network, $bits] = array_pad(explode('/', $range, 2), 2, null);
+            $packed = @inet_pton($network);
+            if ($packed === false || strlen($packed) !== strlen($address)) continue;
+            $prefix = $bits === null ? strlen($packed) * 8 : (int)$bits;
+            if ($prefix < 0 || $prefix > strlen($packed) * 8) continue;
+            $bytes = intdiv($prefix, 8); $remainder = $prefix % 8;
+            if (substr($address, 0, $bytes) !== substr($packed, 0, $bytes)) continue;
+            if ($remainder === 0 || ((ord($address[$bytes]) ^ ord($packed[$bytes])) & (0xff << (8 - $remainder))) === 0) return true;
+        }
+        return false;
     }
 }
 
@@ -318,7 +370,7 @@ final class ApiClient
     private const METHODS = [
         'GET /bootstrap', 'POST /sessions/verify', 'POST /catalog/search',
         'GET /catalog/{id}', 'POST /licenses/free', 'POST /artifacts/{id}/authorize',
-        'POST /licenses/{id}/activate', 'POST /events',
+        'POST /licenses/{id}/activate', 'POST /events', 'GET /catalog/media/{id}',
     ];
 
     public function __construct(private readonly string $baseUrl, private readonly int $timeout = 20)
@@ -384,12 +436,30 @@ final class ApiClient
         Crypto::verifyFile($destination, $expectedHash, $expectedBytes);
     }
 
+    public function streamCatalogMedia(string $token): void
+    {
+        $path = '/catalog/media/' . rawurlencode($token);
+        $this->assertAllowed('GET', $path);
+        $temporary = tmpfile();
+        if ($temporary === false) throw new InstallerException('Cannot create media buffer', 'MEDIA_UNAVAILABLE', 502);
+        $handle = curl_init($this->baseUrl . $path);
+        curl_setopt_array($handle, [CURLOPT_FILE => $temporary, CURLOPT_FOLLOWLOCATION => false, CURLOPT_CONNECTTIMEOUT => 8, CURLOPT_TIMEOUT => 20, CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2, CURLOPT_PROTOCOLS => CURLPROTO_HTTPS]);
+        $ok = curl_exec($handle); $status = curl_getinfo($handle, CURLINFO_RESPONSE_CODE); $type = strtolower((string)curl_getinfo($handle, CURLINFO_CONTENT_TYPE)); $error = curl_error($handle); curl_close($handle);
+        $bytes = ftell($temporary);
+        $type = trim(explode(';', $type)[0]);
+        if ($ok === false || $status !== 200 || $bytes < 1 || $bytes > 8 * 1024 * 1024 || !in_array($type, ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif'], true)) {
+            fclose($temporary); throw new InstallerException('Catalog media is unavailable: ' . $error, 'MEDIA_UNAVAILABLE', 502);
+        }
+        header('Content-Type: ' . $type); header('Content-Length: ' . $bytes); header('Cache-Control: private, max-age=3600'); rewind($temporary); fpassthru($temporary); fclose($temporary);
+    }
+
     private function assertAllowed(string $method, string $path): void
     {
         $static = ['/bootstrap', '/sessions/verify', '/catalog/search', '/licenses/free', '/events'];
         $normalizedPath = $path;
         if (!in_array($path, $static, true)) {
             $normalizedPath = preg_replace('#^/catalog/[A-Za-z0-9._-]+$#', '/catalog/{id}', $normalizedPath);
+            $normalizedPath = preg_replace('#^/catalog/media/[A-Za-z0-9._-]{20,2048}$#', '/catalog/media/{id}', $normalizedPath);
             $normalizedPath = preg_replace('#^/artifacts/[A-Za-z0-9._-]+/authorize$#', '/artifacts/{id}/authorize', $normalizedPath);
             $normalizedPath = preg_replace('#^/licenses/[A-Za-z0-9._-]+/activate$#', '/licenses/{id}/activate', $normalizedPath);
         }
@@ -799,10 +869,23 @@ final class AssetManager
 
     public function pathForRequest(string $requestPath): array
     {
-        if (!preg_match('#^/assets/([a-f0-9]{64})\.(js|css)$#', $requestPath, $match)) throw new InstallerException('Asset not found', 'ASSET_NOT_FOUND', 404);
+        if (!preg_match('#^/assets/([a-f0-9]{64})\.(js|css|json)$#', $requestPath, $match)) throw new InstallerException('Asset not found', 'ASSET_NOT_FOUND', 404);
         $file = $this->state->root . '/asset-' . $match[1] . '.' . $match[2];
         if (!is_file($file) || !hash_equals($match[1], hash_file('sha256', $file))) throw new InstallerException('Asset not found', 'ASSET_NOT_FOUND', 404);
-        return ['file' => $file, 'type' => $match[2] === 'js' ? 'text/javascript; charset=utf-8' : 'text/css; charset=utf-8'];
+        $types = ['js' => 'text/javascript; charset=utf-8', 'css' => 'text/css; charset=utf-8', 'json' => 'application/json; charset=utf-8'];
+        return ['file' => $file, 'type' => $types[$match[2]]];
+    }
+
+    public function runtimeAssets(string $scriptName): array
+    {
+        $payload = $this->bootstrap();
+        $prefix = rtrim($scriptName, '/');
+        $result = [];
+        foreach (($payload['ui']['assets'] ?? []) as $asset) {
+            if (($asset['type'] ?? '') !== 'json' || !isset($asset['role'])) continue;
+            $result[(string)$asset['role']] = $prefix . '/assets/' . $asset['sha256'] . '.json';
+        }
+        return $result;
     }
 
     private function cacheAsset(array $asset): void
@@ -811,7 +894,7 @@ final class AssetManager
         $hash = strtolower((string)($asset['sha256'] ?? ''));
         $bytes = (int)($asset['bytes'] ?? -1);
         $url = (string)($asset['url'] ?? '');
-        if (!in_array($type, ['js', 'css'], true) || !preg_match('/^[a-f0-9]{64}$/', $hash) || $bytes < 1 || $bytes > 50 * 1024 * 1024 || !str_starts_with($url, 'https://')) throw new InstallerException('Signed UI asset metadata is invalid', 'ASSET_METADATA_INVALID');
+        if (!in_array($type, ['js', 'css', 'json'], true) || !preg_match('/^[a-f0-9]{64}$/', $hash) || $bytes < 1 || $bytes > ($type === 'json' ? 5 : 50) * 1024 * 1024 || !str_starts_with($url, 'https://')) throw new InstallerException('Signed UI asset metadata is invalid', 'ASSET_METADATA_INVALID');
         $file = $this->state->root . '/asset-' . $hash . '.' . $type;
         if (is_file($file)) { Crypto::verifyFile($file, $hash, $bytes); return; }
         $temporary = $file . '.tmp';
@@ -842,6 +925,7 @@ final class Application
             $route = Router::resolve($method, $uri);
             if ($route === 'shell') { $this->shell(); return; }
             if ($route === 'asset') { $this->asset(parse_url($uri, PHP_URL_PATH)); return; }
+            if ($route === 'catalog_media') { $this->api->streamCatalogMedia(basename(parse_url($uri, PHP_URL_PATH))); return; }
             if ($route === 'ownership_proof') { $this->ownershipProof(parse_url($uri, PHP_URL_PATH)); return; }
             if ($method !== 'GET') $this->csrf($headers);
             $body = $rawBody === '' ? [] : json_decode($rawBody, true, 32, JSON_THROW_ON_ERROR);
@@ -851,8 +935,8 @@ final class Application
                 'bootstrap' => $this->assets->bootstrap((bool)($body['refresh'] ?? false)),
                 'status' => $this->state->read('status', ['state' => 'idle']),
                 'session' => $this->createSession($body),
-                'catalog_search' => $this->authenticatedRequest('POST', '/catalog/search', $body),
-                'catalog_detail' => $this->authenticatedRequest('GET', '/catalog/' . rawurlencode(basename(parse_url($uri, PHP_URL_PATH))), null),
+                'catalog_search' => $this->api->request('POST', '/catalog/search', $body),
+                'catalog_detail' => $this->api->request('GET', '/catalog/' . rawurlencode(basename(parse_url($uri, PHP_URL_PATH))), null),
                 'install' => (new InstallEngine($this->api, $this->state, $this->target, $this->publicKeys))->install($body + ['token' => $_SESSION['api_token'] ?? '', 'origin' => $_SESSION['origin'] ?? '']),
                 'recover' => (new InstallEngine($this->api, $this->state, $this->target, $this->publicKeys))->recover(),
                 default => throw new InstallerException('Route not found', 'ROUTE_NOT_FOUND', 404),
@@ -868,14 +952,18 @@ final class Application
 
     private function runtime(): array
     {
-        return ['csrf_token' => $_SESSION['csrf'], 'capabilities' => Preflight::capabilities($this->target), 'status' => $this->state->read('status', ['state' => 'idle']), 'paid_checkout' => false];
+        try { $origin = OriginDetector::detect($_SERVER, $this->state, (string)(getenv('SCRIPTBOX_TRUSTED_PROXIES') ?: '')); }
+        catch (Throwable) { $origin = ['origin' => null, 'source' => null]; }
+        return ['csrf_token' => $_SESSION['csrf'], 'capabilities' => Preflight::capabilities($this->target), 'status' => $this->state->read('status', ['state' => 'idle']), 'paid_checkout' => false,
+            'detected_origin' => $origin['origin'], 'origin_source' => $origin['source'], 'can_verify_origin' => $origin['origin'] !== null,
+            'ui_assets' => $this->assets->runtimeAssets((string)($_SERVER['SCRIPT_NAME'] ?? '/install.php'))];
     }
 
     private function createSession(array $body): array
     {
         if (($body['consent'] ?? false) !== true) throw new InstallerException('Telemetry consent is required', 'CONSENT_REQUIRED');
         Preflight::assertWritableTarget($this->target);
-        $origin = (string)($body['origin'] ?? '');
+        $origin = OriginDetector::detect($_SERVER, $this->state, (string)(getenv('SCRIPTBOX_TRUSTED_PROXIES') ?: ''))['origin'];
         $proofs = new OwnershipProof($this->state, (string)($_SERVER['SCRIPT_NAME'] ?? '/install.php'));
         $proof = $proofs->create();
         try {
@@ -905,7 +993,7 @@ final class Application
                 $prefix = rtrim((string)($_SERVER['SCRIPT_NAME'] ?? '/install.php'), '/');
                 $local = $prefix . '/assets/' . $asset['sha256'] . '.' . $asset['type'];
                 if ($asset['type'] === 'css') $links .= '<link rel="stylesheet" href="' . htmlspecialchars($local, ENT_QUOTES) . '">';
-                else $scripts .= '<script type="module" src="' . htmlspecialchars($local, ENT_QUOTES) . '"></script>';
+                elseif ($asset['type'] === 'js') $scripts .= '<script type="module" src="' . htmlspecialchars($local, ENT_QUOTES) . '"></script>';
             }
         } catch (Throwable $error) { $diagnostic = $this->recordDiagnostic($error); }
         $fallback = '<main><h1>ScriptBox Installer</h1><p>The signed installer UI is unavailable.</p>';

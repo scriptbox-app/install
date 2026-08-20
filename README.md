@@ -55,11 +55,11 @@ Do not use a directory containing an existing website. Do not use mode `0777` to
 1. Loads only its compiled API URL and pinned public signing keys.
 2. Requests the signed installer bootstrap over HTTPS.
 3. Verifies the key ID, RS256 signature, protocol version, issue/expiry times, and UI metadata.
-4. Downloads the React JavaScript and CSS into private state and verifies their sizes and SHA-256 hashes.
+4. Downloads the React JavaScript, CSS, and optional Lottie JSON into private state and verifies every size and SHA-256 hash. Only JavaScript and CSS are injected; animations are served as same-origin data.
 5. Reports PHP, extension, database-driver, and target-directory capabilities to the local UI.
 6. Stores a one-time ownership proof outside the document root and exposes it through the installer’s same-origin route.
 7. Asks the API to verify the public HTTPS origin without following redirects or accepting private/reserved addresses.
-8. Searches the catalog only after the verified session is established.
+8. Shows the anonymous, sanitized catalog immediately. Ownership and consent are requested only after Install is pressed.
 9. Issues an anonymous idempotent license for a compatible free package.
 10. Downloads the private ZIP with a short-lived authorization and resumable byte ranges.
 11. Verifies signed package metadata, archive limits, inventory, permissions, and paths.
@@ -95,14 +95,9 @@ Paid items show a preview only. Version 1 does not take payment or start checkou
    https://example.com/install/install.php
    ```
 
-7. Enter only the HTTPS origin, without a path:
-
-   ```text
-   https://example.com
-   ```
-
-8. Review the privacy consent, verify ownership, select a compatible free application, provide an empty database when requested, and start installation.
-9. Keep the page open until the completion screen confirms activation and permanent lock.
+7. Browse the catalog and open script details. The installer detects the public HTTPS origin from the request; there is no editable domain field.
+8. Press Install on a compatible free application, review requirements and privacy consent, then provide an empty database when requested. The one-time ownership proof is created and removed automatically.
+9. Keep the page open until the completion screen confirms activation and permanent lock. Paid items only open a phase-2 preview and cannot charge you.
 
 Verify the server capability response when the UI reports a permission problem:
 
@@ -140,7 +135,7 @@ On aaPanel, an explicit binary may be required:
 
 ## Browser workflow
 
-The UI presents server inspection, privacy consent, HTTPS ownership verification, catalog search, compatibility checks, database configuration, installation progress, and completion or recovery guidance.
+The Project 4-style UI displays the catalog and script details immediately. Server inspection, privacy consent, automatic HTTPS ownership verification, database configuration, installation progress, and completion or recovery guidance appear inside the installation flow after Install is pressed. Runtime or API errors remain in a danger alert above the usable catalog.
 
 The UI never stores credentials or bearer tokens in local storage or JavaScript cookies. Sensitive sessions use secure, HttpOnly, SameSite cookies managed by `install.php`.
 
