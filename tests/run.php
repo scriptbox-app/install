@@ -413,6 +413,9 @@ test('migration placeholder counting follows database-specific SQL syntax', func
     expect(MigrationValidator::placeholderCount('UPDATE t SET value=$safe$?$safe$ WHERE id=?', 'pgsql') === 1, 'PostgreSQL tagged dollar strings must hide placeholders');
     expect(MigrationValidator::placeholderCount('UPDATE t SET value=$$?$$', 'mysql') === 1, 'MySQL must not treat PostgreSQL dollar syntax as a string');
     expectInstallerFailure(fn() => MigrationValidator::placeholderCount('UPDATE t SET value=$broken$?', 'pgsql'), 'MIGRATION_INVALID', 400);
+    expectInstallerFailure(fn() => MigrationValidator::placeholderCount("UPDATE t SET value='safe\\' + LOAD_FILE(?) -- '", 'mysql'), 'MIGRATION_INVALID', 400);
+    expectInstallerFailure(fn() => MigrationValidator::placeholderCount("UPDATE t SET value=E'safe\\' || pg_read_file(?) -- '", 'pgsql'), 'MIGRATION_INVALID', 400);
+    expect(MigrationValidator::placeholderCount("UPDATE t SET value='O''Reilly' WHERE id=?", 'mysql') === 1, 'Doubled quotes must remain unambiguous');
 });
 
 test('migration SQL validation rejects executable INSERT clauses but ignores quoted data', function (): void {
@@ -499,6 +502,21 @@ test('PostgreSQL dollar-quoted strings cannot hide later executable file access'
         fn() => MigrationValidator::assertSafeSql('UPDATE t SET value=$$LOAD_FILE(\'/etc/passwd\')$$', 'mysql'),
         'MIGRATION_INVALID', 400,
     );
+});
+
+test('migration SQL rejects ambiguous backslash quotes and preserves bound data', function (): void {
+    foreach ([
+        ['mysql', "UPDATE t SET value='safe\\' + LOAD_FILE(?) -- '"],
+        ['mariadb', "UPDATE t SET value='safe\\' + LOAD_FILE(?) -- '"],
+        ['pgsql', "UPDATE t SET value='safe\\' || pg_read_file(?) -- '"],
+        ['pgsql', "UPDATE t SET value=E'safe\\' || pg_read_file(?) -- '"],
+    ] as [$driver, $sql]) {
+        expectInstallerFailure(fn() => MigrationValidator::assertSafeSql($sql, $driver), 'MIGRATION_INVALID', 400);
+    }
+    MigrationValidator::assertSafeSql("UPDATE notes SET body='O''Reilly'", 'mysql');
+    MigrationValidator::assertSafeSql("UPDATE notes SET body='C:\\customer\\export'", 'pgsql');
+    $operation = ['driver' => 'mysql', 'sql' => 'UPDATE notes SET body=?', 'parameters' => [['value' => "C:\\customer\\O\\'Reilly"]]];
+    expect(MigrationValidator::placeholderCount($operation['sql'], 'mysql') === count($operation['parameters']), 'Bound backslash data must not affect SQL lexing');
 });
 
 test('migration reader is restartable and keeps large JSONL imports below 64 MiB', function (): void {
