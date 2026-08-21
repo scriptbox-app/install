@@ -1143,6 +1143,9 @@ final class MigrationValidator
                     else $quote = null;
                     continue;
                 }
+                if ($character === '\\' && $next === $quote && $quote !== '`' && in_array($driver, ['mysql', 'mariadb', 'pgsql'], true)) {
+                    throw new InstallerException('Migration SQL contains an unsafe ambiguous backslash-quote escape; use doubled quotes or bound values', 'MIGRATION_INVALID');
+                }
                 if ($mysqlDialect && $character === '\\' && $quote !== '`' && $index + 1 < $length) { $result .= ' '; $index++; continue; }
                 if ($character === $quote) {
                     if ($next === $quote) { $result .= ' '; $index++; }
