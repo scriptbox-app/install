@@ -24,6 +24,7 @@ use ScriptBox\Installer\RequestLimits;
 use ScriptBox\Installer\DatabaseSession;
 use ScriptBox\Installer\InstallEngine;
 use ScriptBox\Installer\MigrationReader;
+use ScriptBox\Installer\MigrationValidator;
 
 $tests = [];
 function test(string $name, callable $callback): void { global $tests; $tests[$name] = $callback; }
@@ -302,6 +303,14 @@ test('migration reader rejects malformed and oversized JSONL lines', function ()
         try { expectInstallerFailure(fn () => iterator_to_array(MigrationReader::operations($archive, ['database' => ['migrations' => ['migrations/001.jsonl']]])), 'MIGRATION_INVALID', 400); }
         finally { @unlink($archive); }
     }
+});
+
+test('MongoDB migration validation rejects command smuggling and excessive nesting', function (): void {
+    expectInstallerFailure(fn () => MigrationValidator::mongoCommand(['dropDatabase' => 1, 'create' => 'users']), 'MIGRATION_INVALID', 400);
+    expectInstallerFailure(fn () => MigrationValidator::mongoCommand(['insert' => 'users', 'documents' => [['_id' => 1]], 'bypassDocumentValidation' => true]), 'MIGRATION_INVALID', 400);
+    $nested = 'value'; for ($index = 0; $index < 40; $index++) $nested = ['child' => $nested];
+    expectInstallerFailure(fn () => MigrationValidator::mongoCommand(['insert' => 'users', 'documents' => [$nested]]), 'MIGRATION_INVALID', 400);
+    expect(MigrationValidator::mongoCommand(['insert' => 'users', 'documents' => [['_id' => 1]], 'ordered' => true])['insert'] === 'users');
 });
 
 test('migration reader is restartable and keeps large JSONL imports below 64 MiB', function (): void {
