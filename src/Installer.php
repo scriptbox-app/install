@@ -1068,6 +1068,44 @@ final class MigrationReader
 
 final class MigrationValidator
 {
+    public static function placeholderCount(string $sql): int
+    {
+        $count = 0; $quote = null; $lineComment = false; $blockComment = false; $length = strlen($sql);
+        for ($index = 0; $index < $length; $index++) {
+            $character = $sql[$index]; $next = $index + 1 < $length ? $sql[$index + 1] : '';
+            if ($lineComment) {
+                if ($character === "\n" || $character === "\r") $lineComment = false;
+                continue;
+            }
+            if ($blockComment) {
+                if ($character === '*' && $next === '/') { $blockComment = false; $index++; }
+                continue;
+            }
+            if ($quote !== null) {
+                if ($quote === ']' && $character === ']') {
+                    if ($next === ']') { $index++; continue; }
+                    $quote = null; continue;
+                }
+                if ($character === '\\' && $quote !== '`' && $index + 1 < $length) { $index++; continue; }
+                if ($character === $quote) {
+                    if ($next === $quote) { $index++; continue; }
+                    $quote = null;
+                }
+                continue;
+            }
+            if (($character === '-' && $next === '-') || $character === '#') {
+                $lineComment = true;
+                if ($character === '-') $index++;
+                continue;
+            }
+            if ($character === '/' && $next === '*') { $blockComment = true; $index++; continue; }
+            if (in_array($character, ["'", '"', '`'], true)) { $quote = $character; continue; }
+            if ($character === '[') { $quote = ']'; continue; }
+            if ($character === '?') $count++;
+        }
+        return $count;
+    }
+
     public static function mongoCommand(array $command): array
     {
         $keys = array_keys($command); $name = $keys[0] ?? '';
@@ -1171,13 +1209,7 @@ final class DatabaseSession
 
     public function applyOperations(iterable $operations, array $config, array $runtimeValues = []): void
     {
-        $foreignKeysDisabled = false;
-        try {
-            if (in_array($this->driver, ['mysql', 'mariadb'], true)) {
-                $this->pdo->exec('SET FOREIGN_KEY_CHECKS=0');
-                $foreignKeysDisabled = true;
-            }
-            foreach ($operations as $operation) {
+        foreach ($operations as $operation) {
                 if ($this->driver === 'none') throw new InstallerException('Package requires database operations', 'DATABASE_REQUIRED');
                 if (!is_array($operation) || ($operation['driver'] ?? null) !== $this->driver) throw new InstallerException('Migration driver does not match', 'MIGRATION_INVALID');
                 if ($this->driver === 'mongodb') {
@@ -1189,19 +1221,26 @@ final class DatabaseSession
                     if ($sql === '' || str_contains($sql, "\0") || str_contains($sql, ';') || !preg_match('/^(CREATE\s+(?:TABLE|INDEX|VIEW)|ALTER\s+TABLE|INSERT\s+INTO|UPDATE\s+)/i', $sql)) throw new InstallerException('Migration operation is unsafe', 'MIGRATION_INVALID');
                     $parameters = $operation['parameters'] ?? [];
                     if (!is_array($parameters) || count($parameters) > 1000) throw new InstallerException('Migration parameters are invalid', 'MIGRATION_INVALID');
-                    if (substr_count($sql, '?') !== count($parameters)) throw new InstallerException('Migration parameter count does not match', 'MIGRATION_INVALID');
+                    if (MigrationValidator::placeholderCount($sql) !== count($parameters)) throw new InstallerException('Migration parameter count does not match', 'MIGRATION_INVALID');
                     $resolved = [];
                     foreach ($parameters as $parameter) {
                         if (!is_array($parameter)) throw new InstallerException('Migration parameter is invalid', 'MIGRATION_INVALID');
                         $resolved[] = ValueResolver::migrationParameter($parameter, $runtimeValues);
                     }
                     $statement = $this->pdo->prepare($sql);
-                    $statement->execute($resolved);
+                    foreach ($resolved as $index => $value) {
+                        $type = match (true) {
+                            $value === null => \PDO::PARAM_NULL,
+                            is_bool($value) => \PDO::PARAM_BOOL,
+                            is_int($value) => \PDO::PARAM_INT,
+                            is_float($value), is_string($value) => \PDO::PARAM_STR,
+                            default => throw new InstallerException('Migration parameter must resolve to a scalar', 'MIGRATION_INVALID'),
+                        };
+                        $statement->bindValue($index + 1, is_float($value) ? (string)$value : $value, $type);
+                    }
+                    $statement->execute();
                 }
             }
-        } finally {
-            if ($foreignKeysDisabled) $this->pdo->exec('SET FOREIGN_KEY_CHECKS=1');
-        }
     }
 
     public function createRecoveryMarker(array $config, string $marker): void

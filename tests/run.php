@@ -313,6 +313,13 @@ test('MongoDB migration validation rejects command smuggling and excessive nesti
     expect(MigrationValidator::mongoCommand(['insert' => 'users', 'documents' => [['_id' => 1]], 'ordered' => true])['insert'] === 'users');
 });
 
+test('migration placeholder counting ignores quoted literals and SQL comments', function (): void {
+    $sql = "INSERT INTO notes (id, body) VALUES (?, '? literal') /* ? */ -- ?\n";
+    expect(MigrationValidator::placeholderCount($sql) === 1, 'Only executable placeholders may be counted');
+    expect(MigrationValidator::placeholderCount("UPDATE notes SET body='it''s ?' WHERE id=?") === 1);
+    expect(MigrationValidator::placeholderCount('UPDATE `?table` SET body="?" WHERE id=?') === 1);
+});
+
 test('migration reader is restartable and keeps large JSONL imports below 64 MiB', function (): void {
     $directory = sys_get_temp_dir() . '/scriptbox-large-migration-' . bin2hex(random_bytes(4)); mkdir($directory, 0700);
     $jsonl = $directory . '/001.jsonl'; $output = fopen($jsonl, 'wb');
@@ -565,6 +572,44 @@ test('database sessions consume streamed literal operations and reject a mismatc
         expect($pdo->query('SELECT name FROM imported WHERE id = 1')->fetchColumn() === 'Demo');
         expectInstallerFailure(fn () => $database->applyOperations((function (): Generator { yield ['driver' => 'mysql', 'sql' => 'UPDATE imported SET name = ?', 'parameters' => [['value' => 'Unsafe']]]; })(), $config), 'MIGRATION_INVALID', 400);
     } finally { @unlink($file); }
+});
+
+test('database sessions bind every PDO scalar with an explicit safe type', function (): void {
+    $file = sys_get_temp_dir() . '/scriptbox-bind-db-' . bin2hex(random_bytes(4)) . '.sqlite'; touch($file);
+    $config = ['driver' => 'sqlite', 'path' => $file];
+    $database = DatabaseSession::connect($config);
+    try {
+        $database->applyOperations((function (): Generator {
+            yield ['driver' => 'sqlite', 'sql' => 'CREATE TABLE scalar_values (null_value, bool_value, int_value, float_value, string_value)', 'parameters' => []];
+            yield [
+                'driver' => 'sqlite',
+                'sql' => 'INSERT INTO scalar_values VALUES (?,?,?,?,?)',
+                'parameters' => [
+                    ['value' => null], ['value' => true], ['value' => 42], ['value' => 1.25], ['value' => '42'],
+                ],
+            ];
+        })(), $config);
+        $pdo = new PDO('sqlite:' . $file);
+        $types = $pdo->query('SELECT typeof(null_value), typeof(bool_value), typeof(int_value), typeof(float_value), typeof(string_value) FROM scalar_values')->fetch(PDO::FETCH_NUM);
+        expect($types === ['null', 'integer', 'integer', 'text', 'text'], 'PDO scalar types were not bound explicitly');
+
+        $database->applyOperations((function (): Generator {
+            yield [
+                'driver' => 'sqlite',
+                'sql' => "INSERT INTO scalar_values (int_value, string_value) VALUES (?, '? customer text') /* ? */ -- ?\n",
+                'parameters' => [['value' => 7]],
+            ];
+        })(), $config);
+        expect((int)$pdo->query('SELECT COUNT(*) FROM scalar_values')->fetchColumn() === 2, 'Quoted question marks must not consume parameters');
+    } finally { @unlink($file); }
+});
+
+test('MySQL package migrations never bypass foreign-key integrity checks', function (): void {
+    $source = (string)file_get_contents(dirname(__DIR__) . '/src/Installer.php');
+    $start = strpos($source, 'public function applyOperations(');
+    $end = strpos($source, 'public function createRecoveryMarker(', $start ?: 0);
+    $method = $start !== false && $end !== false ? substr($source, $start, $end - $start) : '';
+    expect($method !== '' && !str_contains($method, 'SET FOREIGN_KEY_CHECKS=0'), 'Package migrations must not disable MySQL foreign-key validation');
 });
 
 test('journal recovery deletes only hash-bound files and completed directories', function (): void {
