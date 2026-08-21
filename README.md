@@ -168,7 +168,7 @@ Do not delete the journal, private state, or partially installed files manually 
 
 If the React UI cannot start, the server-rendered page shows a stable error code, safe message, and diagnostic ID. The same sanitized record is available through the CLI status command and PHP server log.
 
-Current catalog preview images load directly from API-validated public HTTPS URLs using `no-referrer`. The legacy `install.php/api/media?token=...` route remains temporarily for release rollback but is not used by the current UI. Never place private artifact or storage URLs in catalog image fields.
+Catalog preview images load directly from API-validated public HTTPS URLs using `no-referrer`; the PHP installer does not forward image bytes. Never place private artifact or storage URLs in catalog image fields.
 
 ## Privacy summary
 

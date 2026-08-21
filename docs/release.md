@@ -49,4 +49,6 @@ Users should download the installer and checksum from an approved release, calcu
 
 If PHP/API/UI behavior or contracts change, all affected repositories must be tested together. UI and package bytes are immutable once published; fixes use a new version. An older installer remains supported only while its declared protocol overlaps the API compatibility window.
 
+For the direct-media contract, publish and verify the already-built direct-only UI as a new immutable version first. Confirm bootstrap lists its JavaScript, CSS, and PNG assets and that the built JavaScript has no media-proxy route strings. Only then deploy the direct-only API and this checksum-matched PHP installer. This repository builds and verifies the artifact; it does not authorize a production deployment by itself.
+
 Never use example/development keys in production.

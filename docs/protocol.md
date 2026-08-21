@@ -45,7 +45,6 @@ The API validates a public HTTPS hostname, rejects redirects and private/reserve
 ```text
 POST /catalog/search
 GET  /catalog/{scriptId}
-GET  /catalog/media?token={mediaId}
 POST /sessions/verify
 POST /licenses/free
 POST /artifacts/{artifactId}/authorize
@@ -54,7 +53,7 @@ POST /licenses/{licenseId}/activate
 POST /events
 ```
 
-Catalog data contains public compatibility information but never storage keys or download URLs. Free licenses are anonymous and idempotent for the verified origin, installation ID, script, and version. Artifact authorizations are short-lived and scoped; downloads support bounded ranges. Activation occurs only after a successful same-origin health check.
+Catalog data contains public compatibility information but never storage keys or download URLs. Media fields contain only a validated direct HTTPS `url` and bounded `alt`; opaque media identifiers and image forwarding are not supported. Free licenses are anonymous and idempotent for the verified origin, installation ID, script, and version. Artifact authorizations are short-lived and scoped; downloads support bounded ranges. Activation occurs only after a successful same-origin health check.
 
 ## Compatibility and evolution
 

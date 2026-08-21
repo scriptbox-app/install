@@ -44,7 +44,7 @@ This public checklist is for the hosting administrator deploying `install.php`. 
 4. Allow automatic rollback to finish.
 5. Do not manually delete journaled files or retry if the state is `recovery_required`.
 
-Current catalog images load from sanitized public HTTPS URLs. A failed image keeps its placeholder and does not stop installation. Legacy rollback releases may still report `MEDIA_*` diagnostics for the tokenized proxy route; never share a token, response body, or private URL.
+Catalog images load from sanitized public HTTPS URLs. A failed image keeps its fixed-size placeholder and does not stop installation. Never share a private image URL or response body.
 
 ## Recovery
 
