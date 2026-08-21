@@ -123,10 +123,17 @@ test('router exposes only fixed local API operations', function (): void {
     expect(Router::resolve('GET', '/api/runtime') === 'runtime');
     expect(Router::resolve('POST', '/api/catalog/search') === 'catalog_search');
     expect(Router::resolve('GET', '/api/catalog/SCR-001') === 'catalog_detail');
-    expect(Router::resolve('GET', '/api/media/header.payload.signature') === 'catalog_media');
+    expect(Router::resolve('GET', '/api/media?token=header.payload.signature') === 'catalog_media');
     expect(Router::resolve('GET', '/assets/' . str_repeat('a', 64) . '.json') === 'asset');
     expectThrows(fn () => Router::resolve('POST', '/api/proxy'), 'not found');
     expectThrows(fn () => Router::resolve('GET', '/api/fetch?url=https://evil.example'), 'not found');
+});
+
+test('API allowlist accepts the fixed catalog media query route', function (): void {
+    $client = new ApiClient('https://example.invalid/installer/v1');
+    $assertAllowed = new ReflectionMethod($client, 'assertAllowed');
+    $assertAllowed->invoke($client, 'GET', '/catalog/media?token=header.payload.signature');
+    expectThrows(fn () => $assertAllowed->invoke($client, 'GET', '/admin?token=header.payload.signature'), 'allowlisted');
 });
 
 test('origin detection uses direct HTTPS without trusting browser input', function (): void {

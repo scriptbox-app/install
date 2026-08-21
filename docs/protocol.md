@@ -45,7 +45,7 @@ The API validates a public HTTPS hostname, rejects redirects and private/reserve
 ```text
 POST /catalog/search
 GET  /catalog/{scriptId}
-GET  /catalog/media/{mediaId}
+GET  /catalog/media?token={mediaId}
 POST /sessions/verify
 POST /licenses/free
 POST /artifacts/{artifactId}/authorize

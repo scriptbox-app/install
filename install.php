@@ -254,6 +254,7 @@ final class Router
             'GET /api/runtime' => 'runtime',
             'GET /api/bootstrap' => 'bootstrap',
             'GET /api/status' => 'status',
+            'GET /api/media' => 'catalog_media',
             'POST /api/session' => 'session',
             'POST /api/catalog/search' => 'catalog_search',
             'POST /api/install' => 'install',
@@ -370,7 +371,7 @@ final class ApiClient
     private const METHODS = [
         'GET /bootstrap', 'POST /sessions/verify', 'POST /catalog/search',
         'GET /catalog/{id}', 'POST /licenses/free', 'POST /artifacts/{id}/authorize',
-        'POST /licenses/{id}/activate', 'POST /events', 'GET /catalog/media/{id}',
+        'POST /licenses/{id}/activate', 'POST /events', 'GET /catalog/media', 'GET /catalog/media/{id}',
     ];
 
     public function __construct(private readonly string $baseUrl, private readonly int $timeout = 20)
@@ -438,7 +439,8 @@ final class ApiClient
 
     public function streamCatalogMedia(string $token): void
     {
-        $path = '/catalog/media/' . rawurlencode($token);
+        if (!preg_match('/^[A-Za-z0-9._-]{20,2048}$/', $token)) throw new InstallerException('Catalog media token is invalid', 'MEDIA_NOT_FOUND', 404);
+        $path = '/catalog/media?token=' . rawurlencode($token);
         $this->assertAllowed('GET', $path);
         $temporary = tmpfile();
         if ($temporary === false) throw new InstallerException('Cannot create media buffer', 'MEDIA_UNAVAILABLE', 502);
@@ -455,9 +457,9 @@ final class ApiClient
 
     private function assertAllowed(string $method, string $path): void
     {
-        $static = ['/bootstrap', '/sessions/verify', '/catalog/search', '/licenses/free', '/events'];
-        $normalizedPath = $path;
-        if (!in_array($path, $static, true)) {
+        $static = ['/bootstrap', '/sessions/verify', '/catalog/search', '/catalog/media', '/licenses/free', '/events'];
+        $normalizedPath = parse_url($path, PHP_URL_PATH) ?: $path;
+        if (!in_array($normalizedPath, $static, true)) {
             $normalizedPath = preg_replace('#^/catalog/[A-Za-z0-9._-]+$#', '/catalog/{id}', $normalizedPath);
             $normalizedPath = preg_replace('#^/catalog/media/[A-Za-z0-9._-]{20,2048}$#', '/catalog/media/{id}', $normalizedPath);
             $normalizedPath = preg_replace('#^/artifacts/[A-Za-z0-9._-]+/authorize$#', '/artifacts/{id}/authorize', $normalizedPath);
@@ -925,7 +927,12 @@ final class Application
             $route = Router::resolve($method, $uri);
             if ($route === 'shell') { $this->shell(); return; }
             if ($route === 'asset') { $this->asset(parse_url($uri, PHP_URL_PATH)); return; }
-            if ($route === 'catalog_media') { $this->api->streamCatalogMedia(basename(parse_url($uri, PHP_URL_PATH))); return; }
+            if ($route === 'catalog_media') {
+                parse_str((string)(parse_url($uri, PHP_URL_QUERY) ?? ''), $query);
+                $token = (string)($query['token'] ?? basename(parse_url($uri, PHP_URL_PATH)));
+                $this->api->streamCatalogMedia($token);
+                return;
+            }
             if ($route === 'ownership_proof') { $this->ownershipProof(parse_url($uri, PHP_URL_PATH)); return; }
             if ($method !== 'GET') $this->csrf($headers);
             $body = $rawBody === '' ? [] : json_decode($rawBody, true, 32, JSON_THROW_ON_ERROR);
