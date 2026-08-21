@@ -372,10 +372,10 @@ final class ArchiveInspector
             }
             foreach (($manifest['database']['migrations'] ?? []) as $migration) {
                 if (is_string($migration)) {
-                    if (!self::isSafePath($migration)) throw new InstallerException('Database migration path is invalid', 'MANIFEST_INVALID');
+                    if (!self::isSafePath($migration) || !preg_match('/\.jsonl?$/', $migration)) throw new InstallerException('Database migration path is invalid', 'MANIFEST_INVALID');
                     continue;
                 }
-                if (!is_array($migration) || !self::isSafePath((string)($migration['path'] ?? '')) || !is_array($migration['parameters'] ?? [])) {
+                if (!is_array($migration) || !self::isSafePath((string)($migration['path'] ?? '')) || !preg_match('/\.jsonl?$/', (string)($migration['path'] ?? '')) || !is_array($migration['parameters'] ?? [])) {
                     throw new InstallerException('Database migration definition is invalid', 'MANIFEST_INVALID');
                 }
                 foreach ($migration['parameters'] as $parameter) {
@@ -399,6 +399,10 @@ final class ArchiveInspector
             }
         }
         if (!in_array($manifest['database']['driver'] ?? '', ['none', 'mysql', 'mariadb', 'pgsql', 'sqlite', 'sqlsrv', 'mongodb'], true)) throw new InstallerException('Database driver is unsupported', 'DATABASE_UNSUPPORTED');
+        foreach (($manifest['database']['migrations'] ?? []) as $migration) {
+            $migrationPath = is_array($migration) ? (string)($migration['path'] ?? '') : (string)$migration;
+            if (!self::isSafePath($migrationPath) || !preg_match('/\.jsonl?$/', $migrationPath)) throw new InstallerException('Database migration path is invalid', 'MANIFEST_INVALID');
+        }
         if (($manifest['payload']['root'] ?? '') !== 'payload') throw new InstallerException('Package payload must be root-ready', 'MANIFEST_INVALID');
         foreach (['hooks', 'composer', 'npm', 'urls'] as $forbidden) if (array_key_exists($forbidden, $manifest)) throw new InstallerException('Executable hooks and package URLs are forbidden', 'MANIFEST_FORBIDDEN');
     }
@@ -978,6 +982,15 @@ final class ValueResolver
 
     public static function migrationParameter(array $parameter, array $values): mixed
     {
+        $hasSource = array_key_exists('source', $parameter);
+        $hasValue = array_key_exists('value', $parameter);
+        if ($hasSource === $hasValue) throw new InstallerException('Migration parameter must contain exactly one value source or literal', 'MIGRATION_INVALID');
+        if ($hasValue) {
+            if (array_keys($parameter) !== ['value'] || !(is_null($parameter['value']) || is_scalar($parameter['value']))) {
+                throw new InstallerException('Migration literal must be a JSON scalar', 'MIGRATION_INVALID');
+            }
+            return $parameter['value'];
+        }
         $value = self::source((string)($parameter['source'] ?? ''), $values);
         $transform = $parameter['transform'] ?? null;
         if ($transform === null) return $value;
@@ -990,6 +1003,61 @@ final class ValueResolver
         $hashed = password_hash((string)$value, $algorithm);
         if (!is_string($hashed)) throw new InstallerException('Password hashing failed', 'MIGRATION_INVALID');
         return $hashed;
+    }
+}
+
+final class MigrationReader
+{
+    private const MAX_JSON_BYTES = 8 * 1024 * 1024;
+    private const MAX_JSONL_BYTES = 4 * 1024 * 1024;
+    private const MAX_LINE_BYTES = 1024 * 1024;
+
+    public static function operations(string $archive, array $manifest): \Generator
+    {
+        $zip = new \ZipArchive();
+        if ($zip->open($archive, \ZipArchive::RDONLY) !== true) throw new InstallerException('Migration archive cannot be opened', 'MIGRATION_INVALID');
+        try {
+            foreach (($manifest['database']['migrations'] ?? []) as $migration) {
+                $file = is_array($migration) ? ($migration['path'] ?? '') : $migration;
+                if (!ArchiveInspector::isSafePath((string)$file) || !preg_match('/\.jsonl?$/', (string)$file)) {
+                    throw new InstallerException('Migration path is invalid', 'MIGRATION_INVALID');
+                }
+                if (str_ends_with((string)$file, '.jsonl')) {
+                    yield from self::jsonLines($zip, (string)$file);
+                    continue;
+                }
+                $content = $zip->getFromName((string)$file);
+                if ($content === false || strlen($content) > self::MAX_JSON_BYTES) throw new InstallerException('Migration file is missing or too large', 'MIGRATION_INVALID');
+                try { $decoded = json_decode($content, true, 64, JSON_THROW_ON_ERROR); }
+                catch (\JsonException) { throw new InstallerException('Migration JSON is invalid', 'MIGRATION_INVALID'); }
+                foreach (is_array($decoded) && array_is_list($decoded) ? $decoded : [$decoded] as $operation) {
+                    if (!is_array($operation)) throw new InstallerException('Migration operation is invalid', 'MIGRATION_INVALID');
+                    yield $operation;
+                }
+            }
+        } finally { $zip->close(); }
+    }
+
+    private static function jsonLines(\ZipArchive $zip, string $file): \Generator
+    {
+        $stream = $zip->getStream($file);
+        if ($stream === false) throw new InstallerException('Migration file is missing', 'MIGRATION_INVALID');
+        $bytes = 0;
+        try {
+            while (($line = fgets($stream, self::MAX_LINE_BYTES + 2)) !== false) {
+                $lineBytes = strlen($line); $bytes += $lineBytes;
+                if ($lineBytes > self::MAX_LINE_BYTES || $bytes > self::MAX_JSONL_BYTES
+                    || (!str_ends_with($line, "\n") && !feof($stream))) {
+                    throw new InstallerException('Migration JSONL line or file is too large', 'MIGRATION_INVALID');
+                }
+                $line = trim($line);
+                if ($line === '') continue;
+                try { $operation = json_decode($line, true, 64, JSON_THROW_ON_ERROR); }
+                catch (\JsonException) { throw new InstallerException('Migration JSONL is invalid', 'MIGRATION_INVALID'); }
+                if (!is_array($operation) || array_is_list($operation)) throw new InstallerException('Migration operation is invalid', 'MIGRATION_INVALID');
+                yield $operation;
+            }
+        } finally { fclose($stream); }
     }
 }
 
@@ -1050,28 +1118,39 @@ final class DatabaseSession
         if ((int)$this->pdo->query($query)->fetchColumn() !== 0) throw new InstallerException('Database must be empty', 'DATABASE_NOT_EMPTY');
     }
 
-    public function applyOperations(array $operations, array $config, array $runtimeValues = []): void
+    public function applyOperations(iterable $operations, array $config, array $runtimeValues = []): void
     {
-        if ($this->driver === 'none') {
-            if ($operations !== []) throw new InstallerException('Package requires database operations', 'DATABASE_REQUIRED');
-            return;
-        }
-        foreach ($operations as $operation) {
-            if (!is_array($operation) || ($operation['driver'] ?? $this->driver) !== $this->driver) throw new InstallerException('Migration driver does not match', 'MIGRATION_INVALID');
-            if ($this->driver === 'mongodb') {
-                $command = $operation['command'] ?? null;
-                $allowed = ['create', 'insert', 'createIndexes', 'collMod'];
-                if (!is_array($command) || count(array_intersect(array_keys($command), $allowed)) !== 1) throw new InstallerException('MongoDB operation is unsafe', 'MIGRATION_INVALID');
-                $this->mongo->executeCommand((string)$config['name'], new \MongoDB\Driver\Command($command));
-            } else {
-                $sql = rtrim(trim((string)($operation['sql'] ?? '')), ';');
-                if ($sql === '' || str_contains($sql, "\0") || str_contains($sql, ';') || !preg_match('/^(CREATE\s+(?:TABLE|INDEX|VIEW)|ALTER\s+TABLE|INSERT\s+INTO|UPDATE\s+)/i', $sql)) throw new InstallerException('Migration operation is unsafe', 'MIGRATION_INVALID');
-                $parameters = $operation['parameters'] ?? [];
-                if (!is_array($parameters) || count($parameters) > 1000) throw new InstallerException('Migration parameters are invalid', 'MIGRATION_INVALID');
-                if (substr_count($sql, '?') !== count($parameters)) throw new InstallerException('Migration parameter count does not match', 'MIGRATION_INVALID');
-                $statement = $this->pdo->prepare($sql);
-                $statement->execute(array_map(fn (array $parameter): mixed => ValueResolver::migrationParameter($parameter, $runtimeValues), $parameters));
+        $foreignKeysDisabled = false;
+        try {
+            if (in_array($this->driver, ['mysql', 'mariadb'], true)) {
+                $this->pdo->exec('SET FOREIGN_KEY_CHECKS=0');
+                $foreignKeysDisabled = true;
             }
+            foreach ($operations as $operation) {
+                if ($this->driver === 'none') throw new InstallerException('Package requires database operations', 'DATABASE_REQUIRED');
+                if (!is_array($operation) || ($operation['driver'] ?? null) !== $this->driver) throw new InstallerException('Migration driver does not match', 'MIGRATION_INVALID');
+                if ($this->driver === 'mongodb') {
+                    $command = $operation['command'] ?? null;
+                    $allowed = ['create', 'insert', 'createIndexes', 'collMod'];
+                    if (!is_array($command) || count(array_intersect(array_keys($command), $allowed)) !== 1) throw new InstallerException('MongoDB operation is unsafe', 'MIGRATION_INVALID');
+                    $this->mongo->executeCommand((string)$config['name'], new \MongoDB\Driver\Command($command));
+                } else {
+                    $sql = rtrim(trim((string)($operation['sql'] ?? '')), ';');
+                    if ($sql === '' || str_contains($sql, "\0") || str_contains($sql, ';') || !preg_match('/^(CREATE\s+(?:TABLE|INDEX|VIEW)|ALTER\s+TABLE|INSERT\s+INTO|UPDATE\s+)/i', $sql)) throw new InstallerException('Migration operation is unsafe', 'MIGRATION_INVALID');
+                    $parameters = $operation['parameters'] ?? [];
+                    if (!is_array($parameters) || count($parameters) > 1000) throw new InstallerException('Migration parameters are invalid', 'MIGRATION_INVALID');
+                    if (substr_count($sql, '?') !== count($parameters)) throw new InstallerException('Migration parameter count does not match', 'MIGRATION_INVALID');
+                    $resolved = [];
+                    foreach ($parameters as $parameter) {
+                        if (!is_array($parameter)) throw new InstallerException('Migration parameter is invalid', 'MIGRATION_INVALID');
+                        $resolved[] = ValueResolver::migrationParameter($parameter, $runtimeValues);
+                    }
+                    $statement = $this->pdo->prepare($sql);
+                    $statement->execute($resolved);
+                }
+            }
+        } finally {
+            if ($foreignKeysDisabled) $this->pdo->exec('SET FOREIGN_KEY_CHECKS=1');
         }
     }
 
@@ -1239,16 +1318,15 @@ final class InstallEngine
             $this->phase('database');
             $database = DatabaseSession::connect($dbConfig);
             $database->assertEmpty($dbConfig);
-            $operations = $this->migrationOperations($archive, $manifest);
             $runtime = $this->configurationValues($input, $applicationUrl);
             $this->phase('migrate');
-            if ($operations !== []) {
+            if (($manifest['database']['migrations'] ?? []) !== []) {
                 $databaseChanged = true;
                 $marker = bin2hex(random_bytes(32));
                 $this->state->write('recovery', ['target' => $this->target, 'database_changed' => true, 'database_driver' => (string)($dbConfig['driver'] ?? 'none'), 'database_marker_sha256' => hash('sha256', $marker)]);
                 $this->state->appendJournal(['phase' => 'database_mutation_started']);
                 $database->createRecoveryMarker($dbConfig, $marker);
-                $database->applyOperations($operations, $dbConfig, $runtime);
+                $database->applyOperations(MigrationReader::operations($archive, $manifest), $dbConfig, $runtime);
             }
             $this->phase('configure');
             foreach (($manifest['configuration'] ?? []) as $output) ConfigurationWriter::write($stage, $output, $runtime);
@@ -1410,22 +1488,6 @@ final class InstallEngine
                 stream_copy_to_stream($source, $output); fclose($source); fclose($output); chmod($destination, 0644);
             }
         } finally { $zip->close(); }
-    }
-
-    private function migrationOperations(string $archive, array $manifest): array
-    {
-        $operations = []; $zip = new \ZipArchive(); $zip->open($archive, \ZipArchive::RDONLY);
-        try {
-            foreach (($manifest['database']['migrations'] ?? []) as $migration) {
-                $file = is_array($migration) ? ($migration['path'] ?? '') : $migration;
-                if (!ArchiveInspector::isSafePath((string)$file) || !str_ends_with((string)$file, '.json')) throw new InstallerException('Migration path is invalid', 'MIGRATION_INVALID');
-                $content = $zip->getFromName((string)$file);
-                if ($content === false || strlen($content) > 8 * 1024 * 1024) throw new InstallerException('Migration file is missing or too large', 'MIGRATION_INVALID');
-                $decoded = json_decode($content, true, 64, JSON_THROW_ON_ERROR);
-                foreach (is_array($decoded) && array_is_list($decoded) ? $decoded : [$decoded] as $operation) $operations[] = $operation;
-            }
-        } finally { $zip->close(); }
-        return $operations;
     }
 
     private function configurationValues(array $input, string $origin): array
