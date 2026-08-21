@@ -12,6 +12,7 @@ This public checklist is for the hosting administrator deploying `install.php`. 
 - [ ] Make the target writable by the PHP-FPM pool user with least privilege; never use `0777`.
 - [ ] Create an empty database and restricted database user when required.
 - [ ] Confirm outbound HTTPS to `api.scriptbox.app` is allowed.
+- [ ] If PHP uses `open_basedir`, include `/tmp` or configure a writable `SCRIPTBOX_STATE_DIR` outside the public document root. The installer must not use the hosting account’s parent directory when that path is restricted.
 - [ ] Download `index.php`, `install.php`, `install.php.sha256`, and `release.json` from the same approved release.
 - [ ] Compare `sha256sum install.php` with the published value.
 - [ ] Record that SHA-256 fingerprint for the post-upload runtime check.

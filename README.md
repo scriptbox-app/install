@@ -48,6 +48,8 @@ Database support depends on extensions already installed in PHP:
 - Outbound HTTPS access from PHP to `api.scriptbox.app`.
 - Enough disk space for the compressed archive, staging copy, promoted application, and temporary rollback data.
 
+The installer keeps private state outside the public document root. When PHP `open_basedir` permits the hosting-account parent, that sibling location is used. On cPanel/aaPanel policies that permit only the domain document root and `/tmp`, the installer automatically uses a private mode-`0700` directory under `/tmp`; it never tries to write into the parent account root. Administrators may set `SCRIPTBOX_STATE_DIR` only to an allowed, writable path outside the document root.
+
 Do not use a directory containing an existing website. Do not use mode `0777` to solve permission problems.
 
 ## How `install.php` works

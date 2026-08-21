@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace ScriptBox\Installer;
 
 if (!class_exists(Application::class)) require __DIR__ . '/Installer.php';
+if (PHP_SAPI !== 'cli') ini_set('display_errors', '0');
 $release = defined('SCRIPTBOX_COMPILED_RELEASE') ? SCRIPTBOX_COMPILED_RELEASE : require __DIR__ . '/../config/release.php';
 $installerFile = defined('SCRIPTBOX_INSTALLER_FILE') ? SCRIPTBOX_INSTALLER_FILE : (realpath($_SERVER['SCRIPT_FILENAME'] ?? __FILE__) ?: (__FILE__));
 $controlDirectory = dirname($installerFile);
@@ -58,7 +59,7 @@ catch (InstallerException $error) { http_response_code($error->getCode()); heade
 finally { if (is_resource($requestStream)) fclose($requestStream); }
 $sessionDirectory = $state->root . '/sessions';
 if (!is_dir($sessionDirectory)) mkdir($sessionDirectory, 0700);
-ini_set('session.use_strict_mode', '1'); ini_set('session.use_only_cookies', '1'); ini_set('session.save_path', $sessionDirectory); ini_set('display_errors', '0');
+ini_set('session.use_strict_mode', '1'); ini_set('session.use_only_cookies', '1'); ini_set('session.save_path', $sessionDirectory);
 session_name('scriptbox_installer');
 session_set_cookie_params(['lifetime' => 0, 'path' => '/', 'secure' => true, 'httponly' => true, 'samesite' => 'Strict']);
 session_start();

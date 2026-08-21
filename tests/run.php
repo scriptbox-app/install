@@ -139,6 +139,41 @@ test('state is private, atomic, and redacts secrets', function (): void {
     $store->removeAll();
 });
 
+test('state discovery stays inside open_basedir without using the parent hosting account root', function (): void {
+    $documentRoot = '/www/wwwroot/Demo/install.scriptbox.app';
+    $installerFile = $documentRoot . '/install/install.php';
+    $root = StateStore::resolveDefaultRoot(
+        $documentRoot,
+        $installerFile,
+        $documentRoot . '/:/tmp/',
+        '/tmp'
+    );
+    expect(str_starts_with($root, '/tmp/scriptbox-installer-'), 'Restricted hosting must use its allowed private temporary directory');
+    expect(!str_starts_with($root, '/www/wwwroot/Demo/'), 'State must not escape into the parent hosting account directory');
+});
+
+test('browser error display is disabled before private state discovery', function (): void {
+    $entry = (string)file_get_contents(dirname(__DIR__) . '/src/entry.php');
+    $suppression = strpos($entry, "ini_set('display_errors', '0')");
+    $discovery = strpos($entry, 'StateStore::discover(');
+    expect($suppression !== false && $discovery !== false && $suppression < $discovery, 'Raw PHP warnings must be disabled before state discovery');
+});
+
+test('open_basedir fallback does not probe the forbidden parent directory', function (): void {
+    $root = dirname(__DIR__);
+    $php = <<<'PHP'
+require %s;
+set_error_handler(static function (int $severity, string $message): never { throw new ErrorException($message, 0, $severity); });
+$state = ScriptBox\Installer\StateStore::discover(%s, %s);
+if (!str_starts_with($state->root, '/tmp/scriptbox-installer-')) exit(2);
+$state->removeAll();
+PHP;
+    $program = sprintf($php, var_export($root . '/src/Installer.php', true), var_export($root, true), var_export($root . '/install.php', true));
+    $command = escapeshellarg(PHP_BINARY) . ' -d ' . escapeshellarg('open_basedir=' . $root . ':/tmp') . ' -r ' . escapeshellarg($program) . ' 2>&1';
+    exec($command, $output, $exitCode);
+    expect($exitCode === 0, 'Restricted state discovery emitted a warning: ' . implode("\n", $output));
+});
+
 test('ownership proof uses the installer route and private state', function (): void {
     $root = sys_get_temp_dir() . '/scriptbox-proof-' . bin2hex(random_bytes(4));
     $state = new StateStore($root);

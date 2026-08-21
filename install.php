@@ -86,13 +86,70 @@ final class StateStore
     public static function discover(string $documentRoot, string $installerFile): self
     {
         $configured = getenv('SCRIPTBOX_STATE_DIR');
-        $root = $configured !== false && $configured !== ''
-            ? $configured
-            : dirname(realpath($documentRoot) ?: $documentRoot) . '/.scriptbox-' . substr(hash('sha256', realpath($installerFile) ?: $installerFile), 0, 16);
         $document = rtrim(realpath($documentRoot) ?: $documentRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+        if ($configured !== false && $configured !== '') {
+            $root = $configured;
+            if (!self::allowedByOpenBasedir($root, (string)ini_get('open_basedir'))) {
+                throw new InstallerException('Configured state directory is outside PHP open_basedir', 'STATE_PATH_RESTRICTED', 500);
+            }
+        } else {
+            $root = self::resolveDefaultRoot(
+                $documentRoot,
+                $installerFile,
+                (string)ini_get('open_basedir'),
+                sys_get_temp_dir()
+            );
+        }
         $candidate = rtrim($root, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
         if (str_starts_with($candidate, $document)) throw new InstallerException('State directory must be outside the document root', 'STATE_INSIDE_WEBROOT', 500);
         return new self($root);
+    }
+
+    public static function resolveDefaultRoot(string $documentRoot, string $installerFile, string $openBasedir, string $temporaryRoot): string
+    {
+        $document = realpath($documentRoot) ?: rtrim($documentRoot, DIRECTORY_SEPARATOR);
+        $identity = substr(hash('sha256', realpath($installerFile) ?: $installerFile), 0, 16);
+        $sibling = dirname($document) . '/.scriptbox-' . $identity;
+        if (self::allowedByOpenBasedir($sibling, $openBasedir) && self::parentWritable($sibling)) return $sibling;
+
+        $temporary = rtrim($temporaryRoot, DIRECTORY_SEPARATOR) . '/scriptbox-installer-' . $identity;
+        if (!self::allowedByOpenBasedir($temporary, $openBasedir) || !self::parentWritable($temporary)) {
+            throw new InstallerException('No private state directory is permitted by PHP open_basedir', 'STATE_PATH_RESTRICTED', 500);
+        }
+        return $temporary;
+    }
+
+    private static function allowedByOpenBasedir(string $candidate, string $openBasedir): bool
+    {
+        if (trim($openBasedir) === '') return true;
+        $candidate = self::normalizedPath($candidate);
+        foreach (array_filter(array_map('trim', explode(PATH_SEPARATOR, $openBasedir))) as $allowed) {
+            $allowed = self::normalizedPath($allowed);
+            if ($candidate === $allowed || str_starts_with($candidate . '/', rtrim($allowed, '/') . '/')) return true;
+        }
+        return false;
+    }
+
+    private static function normalizedPath(string $path): string
+    {
+        $path = str_replace('\\', '/', $path);
+        if (!str_starts_with($path, '/') && !preg_match('/^[A-Za-z]:\//', $path)) $path = str_replace('\\', '/', getcwd()) . '/' . $path;
+        $prefix = str_starts_with($path, '/') ? '/' : (preg_match('/^([A-Za-z]:)\//', $path, $match) ? strtoupper($match[1]) . '/' : '');
+        if ($prefix !== '/' && $prefix !== '') $path = substr($path, 3);
+        $segments = [];
+        foreach (explode('/', $path) as $segment) {
+            if ($segment === '' || $segment === '.') continue;
+            if ($segment === '..') { array_pop($segments); continue; }
+            $segments[] = $segment;
+        }
+        return rtrim($prefix . implode('/', $segments), '/') ?: $prefix;
+    }
+
+    private static function parentWritable(string $path): bool
+    {
+        if (is_dir($path)) return !is_link($path) && is_writable($path);
+        $parent = dirname($path);
+        return is_dir($parent) && is_writable($parent);
     }
 
     public function read(string $name, array $fallback = []): array
@@ -2029,6 +2086,7 @@ eJg/etjCwi+Yru2GeRRdBGd8INTS9vhe1wK8eRvdujg31i8LHgw83xJIbxpYZF9m
 ));
 
 if (!class_exists(Application::class)) require __DIR__ . '/Installer.php';
+if (PHP_SAPI !== 'cli') ini_set('display_errors', '0');
 $release = defined('SCRIPTBOX_COMPILED_RELEASE') ? SCRIPTBOX_COMPILED_RELEASE : require __DIR__ . '/../config/release.php';
 $installerFile = defined('SCRIPTBOX_INSTALLER_FILE') ? SCRIPTBOX_INSTALLER_FILE : (realpath($_SERVER['SCRIPT_FILENAME'] ?? __FILE__) ?: (__FILE__));
 $controlDirectory = dirname($installerFile);
@@ -2083,7 +2141,7 @@ catch (InstallerException $error) { http_response_code($error->getCode()); heade
 finally { if (is_resource($requestStream)) fclose($requestStream); }
 $sessionDirectory = $state->root . '/sessions';
 if (!is_dir($sessionDirectory)) mkdir($sessionDirectory, 0700);
-ini_set('session.use_strict_mode', '1'); ini_set('session.use_only_cookies', '1'); ini_set('session.save_path', $sessionDirectory); ini_set('display_errors', '0');
+ini_set('session.use_strict_mode', '1'); ini_set('session.use_only_cookies', '1'); ini_set('session.save_path', $sessionDirectory);
 session_name('scriptbox_installer');
 session_set_cookie_params(['lifetime' => 0, 'path' => '/', 'secure' => true, 'httponly' => true, 'samesite' => 'Strict']);
 session_start();

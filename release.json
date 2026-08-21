@@ -1,7 +1,7 @@
 {
     "version": "1.0.0-dev",
     "protocol": "installer-v1",
-    "installer_sha256": "da9556c28c089428633008024f6beb984045018c8a6301a9db28f8109110daad",
+    "installer_sha256": "0008545c7a0e0b9cbbb3327d6a9892718e42d843cb82ae22ec60e3757120181b",
     "launcher_sha256": "7fea3aaf568186fdb195c2a8447d74a11395b5ac28a5552ef99b4beb6b52fe52",
     "bundle_files": [
         "index.php",
