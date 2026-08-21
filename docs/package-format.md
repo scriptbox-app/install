@@ -152,7 +152,7 @@ Ship `artisan`, `composer.json`, `vendor/autoload.php`, `public/index.php`, comp
   "database": {"driver": "mysql", "migrations": ["migrations/001.jsonl"]},
   "inputs": [],
   "payload": {"root": "payload", "writable": [{"path": "application/cache", "mode": "0770"}, {"path": "application/logs", "mode": "0770"}]},
-  "configuration": [{"path": "application/config/database.php", "format": "token-template", "template": "<?php\ndefined('BASEPATH') OR exit('No direct script access allowed');\n$db['default']=['hostname'=>'{{database.host|php-string}}','port'=>'{{database.port|php-string}}','username'=>'{{database.user|php-string}}','password'=>'{{database.password|php-string}}','database'=>'{{database.name|php-string}}','dbdriver'=>'mysqli'];\n"}],
+  "configuration": [{"path": "application/config/database.php", "format": "token-template", "template": "<?php\ndefined('BASEPATH') OR exit('No direct script access allowed');\n$active_group = 'default';\n$query_builder = true;\n$db['default'] = [\n 'hostname' => '{{database.host|php-string}}',\n 'port' => '{{database.port|php-string}}',\n 'username' => '{{database.user|php-string}}',\n 'password' => '{{database.password|php-string}}',\n 'database' => '{{database.name|php-string}}',\n 'dbdriver' => 'mysqli',\n 'db_debug' => false,\n];\n"}],
   "health_check": {"path": "/"}
 }
 ```
@@ -195,10 +195,8 @@ Ship `spark`, `app/`, `public/index.php`, production dependencies, and compiled 
   "database": {"driver": "mysql", "migrations": ["migrations/001.jsonl"]},
   "inputs": [],
   "payload": {"root": "payload", "writable": [{"path": "tmp", "mode": "0770"}, {"path": "logs", "mode": "0770"}]},
-  "configuration": [{"path": "config/app_local.php", "format": "php-array", "values": {
-    "APP_URL": "{{app.url}}", "DB_DRIVER": "{{database.driver}}", "DB_HOST": "{{database.host}}",
-    "DB_PORT": "{{database.port}}", "DB_NAME": "{{database.name}}", "DB_USER": "{{database.user}}", "DB_PASSWORD": "{{database.password}}"
-  }}],
+  "configuration": [{"path": "config/app_local.php", "format": "token-template",
+    "template": "<?php\nreturn [\n 'App' => [\n  'fullBaseUrl' => '{{app.url|php-string}}',\n ],\n 'Datasources' => [\n  'default' => [\n   'className' => 'Cake\\\\Database\\\\Connection',\n   'driver' => 'Cake\\\\Database\\\\Driver\\\\Mysql',\n   'persistent' => false,\n   'host' => '{{database.host|php-string}}',\n   'port' => '{{database.port|php-string}}',\n   'username' => '{{database.user|php-string}}',\n   'password' => '{{database.password|php-string}}',\n   'database' => '{{database.name|php-string}}',\n   'encoding' => 'utf8mb4',\n  ],\n ],\n];\n"}],
   "health_check": {"path": "/"}
 }
 ```
