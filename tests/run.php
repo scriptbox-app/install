@@ -46,6 +46,21 @@ function expectInstallerFailure(callable $callback, string $code, int $status): 
     throw new RuntimeException('Expected installer exception was not thrown');
 }
 
+function writeStoredZip(string $file, array $entries): void {
+    $locals = ''; $central = ''; $offset = 0;
+    foreach ($entries as [$name, $body]) {
+        $crc = crc32($body); $size = strlen($body); $nameBytes = strlen($name);
+        $local = pack('VvvvvvVVVvv', 0x04034b50, 20, 0, 0, 0, 0, $crc, $size, $size, $nameBytes, 0) . $name . $body;
+        $external = str_ends_with($name, '/') ? (0040755 << 16) : (0100644 << 16);
+        $central .= pack('VvvvvvvVVVvvvvvVV', 0x02014b50, 0x0314, 20, 0, 0, 0, 0, $crc, $size, $size,
+            $nameBytes, 0, 0, 0, 0, $external, $offset) . $name;
+        $locals .= $local; $offset += strlen($local);
+    }
+    $count = count($entries);
+    $eocd = pack('VvvvvVVv', 0x06054b50, 0, 0, $count, $count, strlen($central), strlen($locals), 0);
+    file_put_contents($file, $locals . $central . $eocd);
+}
+
 test('signed bootstrap verifies RS256, key id, and expiry', function (): void {
     $pair = openssl_pkey_new(['private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
     openssl_pkey_export($pair, $private);
@@ -191,6 +206,54 @@ test('archive path validation rejects traversal, absolute paths, and symlinks', 
     expect(!ArchiveInspector::isSafePath('../index.php'));
     expect(!ArchiveInspector::isSafePath('/etc/passwd'));
     expect(!ArchiveInspector::isSafePath('payload\\evil.php'));
+});
+
+test('archive inspection rejects duplicate canonical paths and file-directory collisions', function (): void {
+    $root = sys_get_temp_dir() . '/scriptbox-duplicate-zip-' . bin2hex(random_bytes(4));
+    mkdir($root, 0700, true);
+    $manifest = json_encode([
+        'schema_version' => 1,
+        'script_id' => 'SCR-001',
+        'version' => '1.0.0',
+        'runtime' => ['type' => 'static'],
+        'database' => ['driver' => 'none', 'migrations' => []],
+        'payload' => ['root' => 'payload', 'writable' => []],
+        'health_check' => ['path' => '/'],
+    ], JSON_THROW_ON_ERROR);
+    try {
+        foreach (['manifest', 'payload', 'file-directory'] as $case) {
+            $file = $root . '/' . $case . '.zip';
+            $entries = [['scriptbox.json', $manifest]];
+            if ($case === 'manifest') $entries[] = ['scriptbox.json', str_replace('SCR-001', 'SCR-OTHER', $manifest)];
+            elseif ($case === 'payload') $entries = [...$entries, ['payload/index.html', 'first'], ['payload/index.html', 'second']];
+            else $entries = [...$entries, ['payload/config', 'file'], ['payload/config/', '']];
+            writeStoredZip($file, $entries);
+            expectInstallerFailure(fn() => ArchiveInspector::inspect($file), 'PACKAGE_ENTRY_INVALID', 400);
+        }
+
+        $file = $root . '/migration.zip';
+        $migrationManifest = json_encode([
+            'schema_version' => 2,
+            'script_id' => 'SCR-001',
+            'version' => '1.0.0',
+            'framework' => 'raw_php',
+            'runtime' => ['type' => 'php', 'php' => '>=8.2', 'extensions' => ['pdo_mysql']],
+            'database' => ['driver' => 'mysql', 'migrations' => ['migrations/001.jsonl']],
+            'inputs' => [], 'configuration' => [],
+            'payload' => ['root' => 'payload', 'writable' => []],
+            'health_check' => ['path' => '/'],
+        ], JSON_THROW_ON_ERROR);
+        writeStoredZip($file, [
+            ['scriptbox.json', $migrationManifest],
+            ['payload/index.php', '<?php'],
+            ['migrations/001.jsonl', "{\"driver\":\"mysql\",\"sql\":\"CREATE TABLE x (id INT)\",\"parameters\":[]}\n"],
+            ['migrations/001.jsonl', "{\"driver\":\"mysql\",\"sql\":\"CREATE TABLE y (id INT)\",\"parameters\":[]}\n"],
+        ]);
+        expectInstallerFailure(fn() => ArchiveInspector::inspect($file), 'PACKAGE_ENTRY_INVALID', 400);
+    } finally {
+        foreach (glob($root . '/*') ?: [] as $file) @unlink($file);
+        @rmdir($root);
+    }
 });
 
 test('installer state lock is exclusive', function (): void {
