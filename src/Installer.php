@@ -980,6 +980,11 @@ final class ValueResolver
         return $values[$source];
     }
 
+    public static function generatedAppKey(): string
+    {
+        return 'base64:' . base64_encode(random_bytes(32));
+    }
+
     public static function migrationParameter(array $parameter, array $values): mixed
     {
         $hasSource = array_key_exists('source', $parameter);
@@ -1539,7 +1544,7 @@ final class InstallEngine
     {
         $database = is_array($input['database'] ?? null) ? $input['database'] : [];
         $values = [
-            'app.url' => $origin, 'target.url' => (string)($input['target_url'] ?? $origin), 'generated.app_key' => base64_encode(random_bytes(32)),
+            'app.url' => $origin, 'target.url' => (string)($input['target_url'] ?? $origin), 'generated.app_key' => ValueResolver::generatedAppKey(),
             'database.driver' => $database['driver'] ?? 'none', 'database.host' => $database['host'] ?? '',
             'database.port' => $database['port'] ?? '', 'database.name' => $database['name'] ?? '',
             'database.user' => $database['user'] ?? '', 'database.password' => $database['password'] ?? '',

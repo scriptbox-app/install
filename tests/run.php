@@ -529,6 +529,13 @@ test('token templates encode allowlisted values and migration password transform
     unlink($root . '/config/local.php'); rmdir($root . '/config'); rmdir($root);
 });
 
+test('generated application keys use the Laravel base64 key contract', function (): void {
+    $key = ValueResolver::generatedAppKey();
+    expect(str_starts_with($key, 'base64:'), 'Generated application key is missing the Laravel base64 prefix');
+    $decoded = base64_decode(substr($key, 7), true);
+    expect(is_string($decoded) && strlen($decoded) === 32, 'Generated application key must decode to exactly 32 bytes');
+});
+
 test('database recovery markers bind reset credentials to the original database', function (): void {
     $first = sys_get_temp_dir() . '/scriptbox-db-first-' . bin2hex(random_bytes(4)) . '.sqlite';
     $second = sys_get_temp_dir() . '/scriptbox-db-second-' . bin2hex(random_bytes(4)) . '.sqlite';
