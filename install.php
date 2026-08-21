@@ -1094,47 +1094,14 @@ final class MigrationReader
 
 final class MigrationValidator
 {
-    public static function placeholderCount(string $sql): int
+    public static function placeholderCount(string $sql, string $driver = 'mysql'): int
     {
-        $count = 0; $quote = null; $lineComment = false; $blockComment = false; $length = strlen($sql);
-        for ($index = 0; $index < $length; $index++) {
-            $character = $sql[$index]; $next = $index + 1 < $length ? $sql[$index + 1] : '';
-            if ($lineComment) {
-                if ($character === "\n" || $character === "\r") $lineComment = false;
-                continue;
-            }
-            if ($blockComment) {
-                if ($character === '*' && $next === '/') { $blockComment = false; $index++; }
-                continue;
-            }
-            if ($quote !== null) {
-                if ($quote === ']' && $character === ']') {
-                    if ($next === ']') { $index++; continue; }
-                    $quote = null; continue;
-                }
-                if ($character === '\\' && $quote !== '`' && $index + 1 < $length) { $index++; continue; }
-                if ($character === $quote) {
-                    if ($next === $quote) { $index++; continue; }
-                    $quote = null;
-                }
-                continue;
-            }
-            if (($character === '-' && $next === '-') || $character === '#') {
-                $lineComment = true;
-                if ($character === '-') $index++;
-                continue;
-            }
-            if ($character === '/' && $next === '*') { $blockComment = true; $index++; continue; }
-            if (in_array($character, ["'", '"', '`'], true)) { $quote = $character; continue; }
-            if ($character === '[') { $quote = ']'; continue; }
-            if ($character === '?') $count++;
-        }
-        return $count;
+        return substr_count(self::executableSql($sql, $driver), '?');
     }
 
-    public static function assertSafeSql(string $sql): void
+    public static function assertSafeSql(string $sql, string $driver = 'mysql'): void
     {
-        $executable = self::executableSql($sql);
+        $executable = self::executableSql($sql, $driver);
         $unsafeClause = '/\b(?:DROP|TRUNCATE|RENAME|USE|DEFINER|GRANT|REVOKE|CREATE\s+(?:USER|ROLE|PROCEDURE|FUNCTION|TRIGGER|EVENT|ASSEMBLY)|ALTER\s+ASSEMBLY|INSTALL\s+(?:PLUGIN|COMPONENT)|UNINSTALL\s+(?:PLUGIN|COMPONENT)|LOAD\s+DATA|BULK\s+INSERT|OUTFILE|DUMPFILE|INFILE|ATTACH|DETACH|PRAGMA|VACUUM|PREPARE|EXECUTE|DEALLOCATE|CALL|HANDLER|DELIMITER)\b/i';
         $unsafeFunction = '/\b(?:LOAD_FILE|PG_READ_FILE|PG_READ_BINARY_FILE|PG_LS_DIR|PG_LS_LOGDIR|PG_LS_WALDIR|PG_LS_ARCHIVE_STATUSDIR|PG_LS_LOGICALMAPDIR|PG_LS_LOGICALSNAPDIR|PG_LS_REPLSLOTDIR|PG_LS_TMPDIR|PG_STAT_FILE|PG_FILE_WRITE|PG_FILE_SYNC|PG_FILE_RENAME|PG_FILE_UNLINK|PG_LOGDIR_LS|LO_IMPORT|LO_EXPORT|READFILE|WRITEFILE|LOAD_EXTENSION|OPENROWSET|OPENDATASOURCE|OPENQUERY|XP_CMDSHELL)\s*\(/i';
         if (preg_match($unsafeClause, $executable) || preg_match($unsafeFunction, $executable)) {
@@ -1146,9 +1113,10 @@ final class MigrationValidator
         }
     }
 
-    private static function executableSql(string $sql): string
+    private static function executableSql(string $sql, string $driver): string
     {
-        $result = ''; $quote = null; $lineComment = false; $blockComment = false; $length = strlen($sql);
+        $result = ''; $quote = null; $lineComment = false; $blockComment = false; $executableComment = false; $length = strlen($sql);
+        $mysqlDialect = in_array($driver, ['mysql', 'mariadb'], true);
         for ($index = 0; $index < $length; $index++) {
             $character = $sql[$index]; $next = $index + 1 < $length ? $sql[$index + 1] : '';
             if ($lineComment) {
@@ -1168,21 +1136,37 @@ final class MigrationValidator
                     else $quote = null;
                     continue;
                 }
-                if ($character === '\\' && $quote !== '`' && $index + 1 < $length) { $result .= ' '; $index++; continue; }
+                if ($mysqlDialect && $character === '\\' && $quote !== '`' && $index + 1 < $length) { $result .= ' '; $index++; continue; }
                 if ($character === $quote) {
                     if ($next === $quote) { $result .= ' '; $index++; }
                     else $quote = null;
                 }
                 continue;
             }
-            if (($character === '-' && $next === '-') || $character === '#') {
+            if ($executableComment && $character === '*' && $next === '/') {
+                $result .= '  '; $executableComment = false; $index++; continue;
+            }
+            $third = $index + 2 < $length ? $sql[$index + 2] : '';
+            $dashComment = $character === '-' && $next === '-'
+                && (!$mysqlDialect || $third === '' || preg_match('/[\s\x00-\x1f\x7f]/', $third));
+            if ($dashComment || ($mysqlDialect && $character === '#')) {
                 $lineComment = true; $result .= $character === '-' ? '  ' : ' ';
                 if ($character === '-') $index++;
                 continue;
             }
-            if ($character === '/' && $next === '*') { $blockComment = true; $result .= '  '; $index++; continue; }
+            if ($character === '/' && $next === '*') {
+                $mysqlExecutable = $mysqlDialect && $third === '!';
+                $fourth = $index + 3 < $length ? $sql[$index + 3] : '';
+                $mariaExecutable = $driver === 'mariadb' && strtoupper($third) === 'M' && $fourth === '!';
+                if ($mysqlExecutable || $mariaExecutable) {
+                    $executableComment = true; $result .= $mariaExecutable ? '    ' : '   '; $index += $mariaExecutable ? 3 : 2;
+                } else {
+                    $blockComment = true; $result .= '  '; $index++;
+                }
+                continue;
+            }
             if (in_array($character, ["'", '"', '`'], true)) { $quote = $character; $result .= ' '; continue; }
-            if ($character === '[') { $quote = ']'; $result .= ' '; continue; }
+            if ($driver === 'sqlsrv' && $character === '[') { $quote = ']'; $result .= ' '; continue; }
             $result .= $character;
         }
         return $result;
@@ -1301,10 +1285,10 @@ final class DatabaseSession
                 } else {
                     $sql = rtrim(trim((string)($operation['sql'] ?? '')), ';');
                     if ($sql === '' || str_contains($sql, "\0") || str_contains($sql, ';') || !preg_match('/^(CREATE\s+(?:TABLE|INDEX|VIEW)|ALTER\s+TABLE|INSERT\s+INTO|UPDATE\s+)/i', $sql)) throw new InstallerException('Migration operation is unsafe', 'MIGRATION_INVALID');
-                    MigrationValidator::assertSafeSql($sql);
+                    MigrationValidator::assertSafeSql($sql, $this->driver);
                     $parameters = $operation['parameters'] ?? [];
                     if (!is_array($parameters) || count($parameters) > 1000) throw new InstallerException('Migration parameters are invalid', 'MIGRATION_INVALID');
-                    if (MigrationValidator::placeholderCount($sql) !== count($parameters)) throw new InstallerException('Migration parameter count does not match', 'MIGRATION_INVALID');
+                    if (MigrationValidator::placeholderCount($sql, $this->driver) !== count($parameters)) throw new InstallerException('Migration parameter count does not match', 'MIGRATION_INVALID');
                     $resolved = [];
                     foreach ($parameters as $parameter) {
                         if (!is_array($parameter)) throw new InstallerException('Migration parameter is invalid', 'MIGRATION_INVALID');
