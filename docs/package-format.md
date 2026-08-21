@@ -85,9 +85,11 @@ Framework guidance:
 
 - Laravel and CodeIgniter 4: generated `.env`.
 - CodeIgniter 3: exact token template for `application/config/database.php`, or a packaged environment adapter.
-- CakePHP: PHP-array output or exact token template for `config/app_local.php`.
+- CakePHP: exact token template for the nested `Datasources.default` configuration in `config/app_local.php`.
 - Raw PHP: dotenv, JSON, PHP array, or exact signed template.
 - Static: no database/configuration unless explicitly declared.
+
+The automatic builder's built-in CodeIgniter 3, CodeIgniter 4, and CakePHP profiles are MySQL/MariaDB-specific. For PostgreSQL, SQLite, SQL Server, or MongoDB, an operator must supply a reviewed explicit profile with matching non-empty configuration and application extensions. The builder adds only the selected installer database extension; it must not carry `mysqli` or `pdo_mysql` into that explicit non-MySQL profile unless the application independently requires them.
 
 ## Complete framework examples
 
@@ -271,6 +273,8 @@ MongoDB JSONL allows one `create`, `insert`, `createIndexes`, or `collMod` comma
 
 Generated literal descriptors contain only one JSON scalar `value`. Installer-time values contain one allowlisted `source`; a password source may add `password_hash` with `bcrypt` or `argon2id`. Arrays/objects as relational literal parameters, mixed `value` and `source`, unknown fields, raw `.sql`, executable hooks, and arbitrary commands are rejected.
 
+Executable SQL may not read or write server files, even when nested inside an otherwise allowlisted statement. Rejected constructs include MySQL `LOAD_FILE` and `INTO OUTFILE`/`DUMPFILE`, PostgreSQL `pg_read_file`, `pg_read_binary_file`, and `lo_import`, and SQL Server `OPENROWSET(BULK ...)`. Detection ignores quoted literals and comments, so bound text containing these words is not treated as executable SQL.
+
 Question marks inside quoted strings, quoted identifiers, and SQL comments are data, not placeholders. Foreign-key checks remain enabled while migrations run, so create and seed referenced parent rows before child rows. Referential-integrity failures stop installation and trigger rollback.
 
 ## Preparing a clean ZIP from another domain
@@ -295,7 +299,9 @@ An archive or SQL converter cannot decide which live data is private; sanitizati
 | Expansion ratio | 100:1 |
 | Download chunk | 8 MiB |
 
-The manifest inventory must agree with actual package files, sizes, permissions, and SHA-256 metadata.
+The file-count and unpacked-byte ceilings apply to the aggregate normalized payload, generated or reviewed migrations, required directories, and manifest—not to each part independently. Preparation stops before copying or writing a migration chunk that would cross either ceiling, in both `check` and `build` mode, and removes private temporary output after failure.
+
+The manifest inventory must agree with actual package files, sizes, permissions, and SHA-256 metadata. Archives containing duplicate canonical paths are rejected before extraction, including repeated manifest, payload, or migration names and file/directory collisions such as `payload/config` together with `payload/config/`.
 
 ## Forbidden content
 
