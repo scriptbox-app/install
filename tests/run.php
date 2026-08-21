@@ -352,6 +352,20 @@ test('migration SQL validation rejects executable INSERT clauses but ignores quo
     MigrationValidator::assertSafeSql('INSERT INTO audit (message) VALUES (?)');
 });
 
+test('migration SQL rejects nested filesystem imports but ignores quoted data and comments', function (): void {
+    foreach ([
+        'UPDATE files SET body=LOAD_FILE(?)',
+        'UPDATE files SET body=pg_read_file(?)',
+        'UPDATE files SET body=pg_read_binary_file(?)',
+        'UPDATE files SET oid=lo_import(?)',
+        'UPDATE files SET body=OPENROWSET(BULK ?, SINGLE_CLOB)',
+        'INSERT INTO files (body) VALUES (?) INTO DUMPFILE ?',
+    ] as $sql) {
+        expectInstallerFailure(fn() => MigrationValidator::assertSafeSql($sql), 'MIGRATION_INVALID', 400);
+    }
+    MigrationValidator::assertSafeSql("UPDATE notes SET body='LOAD_FILE pg_read_file OPENROWSET DUMPFILE' /* lo_import */");
+});
+
 test('migration reader is restartable and keeps large JSONL imports below 64 MiB', function (): void {
     $directory = sys_get_temp_dir() . '/scriptbox-large-migration-' . bin2hex(random_bytes(4)); mkdir($directory, 0700);
     $jsonl = $directory . '/001.jsonl'; $output = fopen($jsonl, 'wb');

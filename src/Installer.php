@@ -1114,7 +1114,7 @@ final class MigrationValidator
     public static function assertSafeSql(string $sql): void
     {
         $executable = self::executableSql($sql);
-        if (preg_match('/\b(?:DROP|TRUNCATE|RENAME|USE|DEFINER|GRANT|REVOKE|CREATE\s+(?:USER|ROLE|PROCEDURE|FUNCTION|TRIGGER|EVENT)|LOAD\s+DATA|OUTFILE|INFILE|ATTACH|DETACH|PRAGMA|VACUUM|PREPARE|EXECUTE|DEALLOCATE|CALL|HANDLER|DELIMITER)\b/i', $executable)) {
+        if (preg_match('/\b(?:DROP|TRUNCATE|RENAME|USE|DEFINER|GRANT|REVOKE|CREATE\s+(?:USER|ROLE|PROCEDURE|FUNCTION|TRIGGER|EVENT)|LOAD\s+DATA|LOAD_FILE|OUTFILE|DUMPFILE|INFILE|PG_READ_FILE|PG_READ_BINARY_FILE|LO_IMPORT|OPENROWSET|ATTACH|DETACH|PRAGMA|VACUUM|PREPARE|EXECUTE|DEALLOCATE|CALL|HANDLER|DELIMITER)\b/i', $executable)) {
             throw new InstallerException('Migration SQL contains an unsafe executable clause', 'MIGRATION_INVALID');
         }
         if (preg_match('/^INSERT\s+INTO\b/i', $executable)
