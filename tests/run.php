@@ -422,11 +422,36 @@ test('migration SQL rejects nested filesystem imports but ignores quoted data an
         'UPDATE files SET body=pg_read_binary_file(?)',
         'UPDATE files SET oid=lo_import(?)',
         'UPDATE files SET body=OPENROWSET(BULK ?, SINGLE_CLOB)',
+        'UPDATE files SET oid=lo_export(?, ?)',
+        'UPDATE files SET body=pg_ls_dir(?)',
+        'UPDATE files SET body=pg_ls_logdir()',
+        'UPDATE files SET body=pg_ls_waldir()',
+        'UPDATE files SET body=pg_ls_archive_statusdir()',
+        'UPDATE files SET body=pg_ls_logicalmapdir()',
+        'UPDATE files SET body=pg_ls_logicalsnapdir()',
+        'UPDATE files SET body=pg_ls_replslotdir(?)',
+        'UPDATE files SET body=pg_ls_tmpdir()',
+        'UPDATE files SET body=pg_stat_file(?)',
+        'UPDATE files SET body=pg_file_write(?, ?, ?)',
+        'UPDATE files SET body=pg_file_sync(?)',
+        'UPDATE files SET body=pg_file_rename(?, ?)',
+        'UPDATE files SET body=pg_file_unlink(?)',
+        'UPDATE files SET body=pg_logdir_ls()',
+        'UPDATE files SET body=readfile(?)',
+        'UPDATE files SET body=writefile(?, ?)',
+        'UPDATE files SET body=load_extension(?)',
+        'UPDATE files SET body=OPENDATASOURCE(?, ?)',
+        'UPDATE files SET body=OPENQUERY(?, ?)',
+        'UPDATE files SET body=xp_cmdshell(?)',
+        'UPDATE files SET body=INSTALL PLUGIN ?',
+        'UPDATE files SET body=INSTALL COMPONENT ?',
+        'UPDATE files SET body=CREATE ASSEMBLY ?',
         'INSERT INTO files (body) VALUES (?) INTO DUMPFILE ?',
     ] as $sql) {
         expectInstallerFailure(fn() => MigrationValidator::assertSafeSql($sql), 'MIGRATION_INVALID', 400);
     }
-    MigrationValidator::assertSafeSql("UPDATE notes SET body='LOAD_FILE pg_read_file OPENROWSET DUMPFILE' /* lo_import */");
+    MigrationValidator::assertSafeSql("UPDATE notes SET body='LO_EXPORT PG_LS_DIR PG_STAT_FILE LOAD_EXTENSION PG_FILE_WRITE READFILE WRITEFILE OPENQUERY OPENDATASOURCE XP_CMDSHELL INSTALL PLUGIN CREATE ASSEMBLY' /* pg_file_unlink */");
+    MigrationValidator::assertSafeSql('UPDATE notes SET body=? /* LO_EXPORT PG_LS_DIR PG_LS_LOGDIR PG_LS_WALDIR PG_LS_ARCHIVE_STATUSDIR PG_LS_LOGICALMAPDIR PG_LS_LOGICALSNAPDIR PG_LS_REPLSLOTDIR PG_LS_TMPDIR PG_STAT_FILE PG_FILE_WRITE PG_FILE_SYNC PG_FILE_RENAME PG_FILE_UNLINK PG_LOGDIR_LS READFILE WRITEFILE LOAD_EXTENSION OPENDATASOURCE OPENQUERY XP_CMDSHELL INSTALL PLUGIN INSTALL COMPONENT CREATE ASSEMBLY */');
 });
 
 test('migration reader is restartable and keeps large JSONL imports below 64 MiB', function (): void {
