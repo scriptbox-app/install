@@ -402,6 +402,15 @@ test('migration placeholder counting ignores quoted literals and SQL comments', 
     expect(MigrationValidator::placeholderCount('UPDATE `?table` SET body="?" WHERE id=?') === 1);
 });
 
+test('migration placeholder counting follows database-specific SQL syntax', function (): void {
+    expect(MigrationValidator::placeholderCount('UPDATE t SET value=?--?', 'mysql') === 2, 'MySQL -- without whitespace must stay executable');
+    expect(MigrationValidator::placeholderCount('UPDATE t SET value=?-- ?', 'mysql') === 1, 'MySQL -- plus whitespace must start a comment');
+    expect(MigrationValidator::placeholderCount('UPDATE t SET value=?#?', 'pgsql') === 2, 'PostgreSQL # must not start a comment');
+    expect(MigrationValidator::placeholderCount('UPDATE t SET value=? /*!80000 + ? */', 'mysql') === 2, 'MySQL executable comments must stay executable');
+    expect(MigrationValidator::placeholderCount('UPDATE t SET value=(ARRAY[?])[?]', 'pgsql') === 2, 'PostgreSQL array brackets must stay executable');
+    expect(MigrationValidator::placeholderCount('UPDATE [question?table] SET value=?', 'sqlsrv') === 1, 'SQL Server bracket identifiers must stay quoted');
+});
+
 test('migration SQL validation rejects executable INSERT clauses but ignores quoted data', function (): void {
     expectInstallerFailure(
         fn() => MigrationValidator::assertSafeSql('INSERT INTO copied (id) SELECT id FROM private_rows'),
@@ -452,6 +461,21 @@ test('migration SQL rejects nested filesystem imports but ignores quoted data an
     }
     MigrationValidator::assertSafeSql("UPDATE notes SET body='LO_EXPORT PG_LS_DIR PG_STAT_FILE LOAD_EXTENSION PG_FILE_WRITE READFILE WRITEFILE OPENQUERY OPENDATASOURCE XP_CMDSHELL INSTALL PLUGIN CREATE ASSEMBLY' /* pg_file_unlink */");
     MigrationValidator::assertSafeSql('UPDATE notes SET body=? /* LO_EXPORT PG_LS_DIR PG_LS_LOGDIR PG_LS_WALDIR PG_LS_ARCHIVE_STATUSDIR PG_LS_LOGICALMAPDIR PG_LS_LOGICALSNAPDIR PG_LS_REPLSLOTDIR PG_LS_TMPDIR PG_STAT_FILE PG_FILE_WRITE PG_FILE_SYNC PG_FILE_RENAME PG_FILE_UNLINK PG_LOGDIR_LS READFILE WRITEFILE LOAD_EXTENSION OPENDATASOURCE OPENQUERY XP_CMDSHELL INSTALL PLUGIN INSTALL COMPONENT CREATE ASSEMBLY */');
+});
+
+test('migration SQL cannot hide file access behind another database comment dialect', function (): void {
+    foreach ([
+        ['mysql', "UPDATE t SET value=0--LOAD_FILE('/etc/passwd')"],
+        ['pgsql', "UPDATE t SET value=0#length(pg_read_file('/etc/passwd'))"],
+        ['mysql', "UPDATE t SET value=0 /*!80000 + LENGTH(LOAD_FILE('/etc/passwd')) */"],
+        ['mariadb', "UPDATE t SET value=0 /*M!100000 + LENGTH(LOAD_FILE('/etc/passwd')) */"],
+        ['pgsql', "UPDATE t SET value=(ARRAY[1,2])[length(pg_read_file('/etc/passwd'))]"],
+    ] as [$driver, $sql]) {
+        expectInstallerFailure(fn() => MigrationValidator::assertSafeSql($sql, $driver), 'MIGRATION_INVALID', 400);
+    }
+    MigrationValidator::assertSafeSql("UPDATE t SET value=0 -- LOAD_FILE('/etc/passwd')", 'mysql');
+    MigrationValidator::assertSafeSql("UPDATE t SET value=0 /* pg_read_file('/etc/passwd') */", 'pgsql');
+    MigrationValidator::assertSafeSql('UPDATE [PG_READ_FILE(?)] SET value=?', 'sqlsrv');
 });
 
 test('migration reader is restartable and keeps large JSONL imports below 64 MiB', function (): void {
