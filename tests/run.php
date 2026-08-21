@@ -160,6 +160,19 @@ test('media validation measures buffered bytes when the stream cursor is zero', 
     fclose($temporary);
 });
 
+test('bounded media writer aborts before accepting bytes beyond the size limit', function (): void {
+    $temporary = tmpfile();
+    expect($temporary !== false, 'Cannot create temporary media stream');
+    $buffer = new MediaBuffer($temporary);
+    $limit = str_repeat('x', MediaBuffer::MAX_BYTES);
+    expect($buffer->write(null, $limit) === MediaBuffer::MAX_BYTES, 'Writer must accept bytes through the size limit');
+    expect($buffer->write(null, 'x') === 0, 'Writer must abort the transfer before writing an oversized chunk');
+    expect($buffer->limitExceeded(), 'Writer must retain the safe oversized-media outcome');
+    expectInstallerFailure(fn () => $buffer->assertWithinLimit(), 'MEDIA_SIZE_INVALID', 502);
+    expect(fstat($temporary)['size'] === MediaBuffer::MAX_BYTES, 'Writer must not buffer bytes beyond the limit');
+    fclose($temporary);
+});
+
 test('catalog media validation accepts a supported type after normalizing its parameters', function (): void {
     $temporary = tmpfile();
     expect($temporary !== false, 'Cannot create temporary media stream');
@@ -200,7 +213,7 @@ test('catalog media validation reports an empty media buffer', function (): void
 test('catalog media validation reports an oversized media buffer', function (): void {
     $temporary = tmpfile();
     expect($temporary !== false, 'Cannot create temporary media stream');
-    ftruncate($temporary, 8 * 1024 * 1024 + 1);
+    expect(ftruncate($temporary, 8 * 1024 * 1024 + 1) === true, 'Cannot create oversized media fixture');
     expectInstallerFailure(fn () => CatalogMedia::validate(true, 200, 'image/png', $temporary), 'MEDIA_SIZE_INVALID', 502);
     fclose($temporary);
 });

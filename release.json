@@ -1,7 +1,7 @@
 {
     "version": "1.0.0-dev",
     "protocol": "installer-v1",
-    "installer_sha256": "ee1241a6fb60c35c942c80925f49387c95422f9ee40b9dbe117f3dd3f51c2206",
+    "installer_sha256": "79d41f436521d976dd6b8914b91a5cb1efd4fa529b34d81fc5e1e8ae6cfcd2fb",
     "signing_key_ids": [
         "installer-root-2026-01"
     ],

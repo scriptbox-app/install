@@ -383,6 +383,32 @@ final class MediaBuffer
 {
     public const MAX_BYTES = 8 * 1024 * 1024;
 
+    private bool $limitExceeded = false;
+
+    public function __construct(private $stream) {}
+
+    public function write(mixed $handle, string $chunk): int
+    {
+        $stat = fstat($this->stream);
+        $bytes = is_array($stat) ? ($stat['size'] ?? null) : null;
+        if (!is_int($bytes) || strlen($chunk) > self::MAX_BYTES - $bytes) {
+            $this->limitExceeded = true;
+            return 0;
+        }
+        $written = fwrite($this->stream, $chunk);
+        return is_int($written) ? $written : 0;
+    }
+
+    public function limitExceeded(): bool
+    {
+        return $this->limitExceeded;
+    }
+
+    public function assertWithinLimit(): void
+    {
+        if ($this->limitExceeded) throw new InstallerException('Catalog media size is invalid', 'MEDIA_SIZE_INVALID', 502);
+    }
+
     public static function validatedSize($stream): int
     {
         $stat = fstat($stream);
@@ -486,10 +512,12 @@ final class ApiClient
         $this->assertAllowed('GET', $path);
         $temporary = tmpfile();
         if ($temporary === false) throw new InstallerException('Cannot create media buffer', 'MEDIA_UNAVAILABLE', 502);
+        $buffer = new MediaBuffer($temporary);
         $handle = curl_init($this->baseUrl . $path);
-        curl_setopt_array($handle, [CURLOPT_FILE => $temporary, CURLOPT_FOLLOWLOCATION => false, CURLOPT_CONNECTTIMEOUT => 8, CURLOPT_TIMEOUT => 20, CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2, CURLOPT_PROTOCOLS => CURLPROTO_HTTPS]);
+        curl_setopt_array($handle, [CURLOPT_WRITEFUNCTION => [$buffer, 'write'], CURLOPT_FOLLOWLOCATION => false, CURLOPT_CONNECTTIMEOUT => 8, CURLOPT_TIMEOUT => 20, CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2, CURLOPT_PROTOCOLS => CURLPROTO_HTTPS]);
         $ok = curl_exec($handle); $status = curl_getinfo($handle, CURLINFO_RESPONSE_CODE); $type = (string)curl_getinfo($handle, CURLINFO_CONTENT_TYPE); curl_close($handle);
         try {
+            $buffer->assertWithinLimit();
             $media = CatalogMedia::validate($ok === true, $status, $type, $temporary);
             header('Content-Type: ' . $media['content_type']); header('Content-Length: ' . $media['bytes']); header('Cache-Control: private, max-age=3600'); rewind($temporary); fpassthru($temporary);
         } finally {
