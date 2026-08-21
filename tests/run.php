@@ -305,6 +305,25 @@ test('migration reader rejects malformed and oversized JSONL lines', function ()
     }
 });
 
+test('legacy JSON migration size is rejected from ZIP metadata before allocation', function (): void {
+    $directory = sys_get_temp_dir() . '/scriptbox-legacy-size-' . bin2hex(random_bytes(4)); mkdir($directory, 0700);
+    $json = $directory . '/oversized.json'; $stream = fopen($json, 'wb');
+    fwrite($stream, '[');
+    for ($index = 0; $index < 9; $index++) fwrite($stream, str_repeat(' ', 1024 * 1024));
+    fwrite($stream, ']'); fclose($stream);
+    $archive = $directory . '/oversized.zip'; $zip = new ZipArchive(); $zip->open($archive, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+    $zip->addFile($json, 'migrations/001.json'); $zip->setCompressionName('migrations/001.json', ZipArchive::CM_DEFLATE, 9); $zip->close();
+    try {
+        $baseline = memory_get_usage(true); memory_reset_peak_usage();
+        expectInstallerFailure(
+            fn () => iterator_to_array(MigrationReader::operations($archive, ['database' => ['migrations' => ['migrations/001.json']]])),
+            'MIGRATION_INVALID',
+            400,
+        );
+        expect(memory_get_peak_usage(true) - $baseline < 4 * 1024 * 1024, 'Oversized legacy JSON was allocated before rejection');
+    } finally { @unlink($archive); @unlink($json); @rmdir($directory); }
+});
+
 test('MongoDB migration validation rejects command smuggling and excessive nesting', function (): void {
     expectInstallerFailure(fn () => MigrationValidator::mongoCommand(['dropDatabase' => 1, 'create' => 'users']), 'MIGRATION_INVALID', 400);
     expectInstallerFailure(fn () => MigrationValidator::mongoCommand(['insert' => 'users', 'documents' => [['_id' => 1]], 'bypassDocumentValidation' => true]), 'MIGRATION_INVALID', 400);

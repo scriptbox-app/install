@@ -1031,6 +1031,11 @@ final class MigrationReader
                     yield from self::jsonLines($zip, (string)$file);
                     continue;
                 }
+                $stat = $zip->statName((string)$file, \ZipArchive::FL_UNCHANGED);
+                $declaredBytes = is_array($stat) ? ($stat['size'] ?? null) : null;
+                if (!is_int($declaredBytes) || $declaredBytes < 0 || $declaredBytes > self::MAX_JSON_BYTES) {
+                    throw new InstallerException('Migration file is missing or too large', 'MIGRATION_INVALID');
+                }
                 $content = $zip->getFromName((string)$file);
                 if ($content === false || strlen($content) > self::MAX_JSON_BYTES) throw new InstallerException('Migration file is missing or too large', 'MIGRATION_INVALID');
                 try { $decoded = json_decode($content, true, 64, JSON_THROW_ON_ERROR); }
