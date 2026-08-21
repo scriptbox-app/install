@@ -138,7 +138,7 @@ Ship `payload/index.html` and already-built assets.
 }
 ```
 
-Ship `artisan`, `composer.json`, `vendor/autoload.php`, `public/index.php`, complete production dependencies, and compiled assets. Configure hosting so the public entrypoint is exposed safely; the installer does not edit the web server.
+Ship `artisan`, `composer.json`, `vendor/autoload.php`, `public/index.php`, complete production dependencies, and compiled assets. `{{generated.app_key}}` is generated as Laravel's `base64:` prefix followed by a value that decodes to exactly 32 random bytes. Configure hosting so the public entrypoint is exposed safely; the installer does not edit the web server.
 
 ### CodeIgniter 3
 
@@ -148,11 +148,11 @@ Ship `artisan`, `composer.json`, `vendor/autoload.php`, `public/index.php`, comp
   "script_id": "SCR-CI3",
   "version": "1.0.0",
   "framework": "codeigniter3",
-  "runtime": {"type": "php", "php": ">=8.1", "extensions": ["mysqli"]},
+  "runtime": {"type": "php", "php": ">=8.1", "extensions": ["mysqli", "pdo_mysql"]},
   "database": {"driver": "mysql", "migrations": ["migrations/001.jsonl"]},
   "inputs": [],
   "payload": {"root": "payload", "writable": [{"path": "application/cache", "mode": "0770"}, {"path": "application/logs", "mode": "0770"}]},
-  "configuration": [{"path": "application/config/database.php", "format": "token-template", "template": "<?php\ndefined('BASEPATH') OR exit('No direct script access allowed');\n$db['default']=['hostname'=>'{{database.host|php-string}}','username'=>'{{database.user|php-string}}','password'=>'{{database.password|php-string}}','database'=>'{{database.name|php-string}}','dbdriver'=>'mysqli'];\n"}],
+  "configuration": [{"path": "application/config/database.php", "format": "token-template", "template": "<?php\ndefined('BASEPATH') OR exit('No direct script access allowed');\n$db['default']=['hostname'=>'{{database.host|php-string}}','port'=>'{{database.port|php-string}}','username'=>'{{database.user|php-string}}','password'=>'{{database.password|php-string}}','database'=>'{{database.name|php-string}}','dbdriver'=>'mysqli'];\n"}],
   "health_check": {"path": "/"}
 }
 ```
@@ -167,13 +167,13 @@ Ship `application/`, `system/`, and `index.php`.
   "script_id": "SCR-CI4",
   "version": "1.0.0",
   "framework": "codeigniter4",
-  "runtime": {"type": "php", "php": ">=8.1", "extensions": ["intl", "mbstring", "mysqli"]},
+  "runtime": {"type": "php", "php": ">=8.1", "extensions": ["intl", "mbstring", "mysqli", "pdo_mysql"]},
   "database": {"driver": "mysql", "migrations": ["migrations/001.jsonl"]},
   "inputs": [],
   "payload": {"root": "payload", "writable": [{"path": "writable", "mode": "0770"}]},
   "configuration": [{"path": ".env", "format": "dotenv", "values": {
     "CI_ENVIRONMENT": "production", "app.baseURL": "{{app.url}}",
-    "database.default.hostname": "{{database.host}}", "database.default.database": "{{database.name}}",
+    "database.default.hostname": "{{database.host}}", "database.default.port": "{{database.port}}", "database.default.database": "{{database.name}}",
     "database.default.username": "{{database.user}}", "database.default.password": "{{database.password}}",
     "database.default.DBDriver": "MySQLi"
   }}],
@@ -273,10 +273,12 @@ MongoDB JSONL allows one `create`, `insert`, `createIndexes`, or `collMod` comma
 
 Generated literal descriptors contain only one JSON scalar `value`. Installer-time values contain one allowlisted `source`; a password source may add `password_hash` with `bcrypt` or `argon2id`. Arrays/objects as relational literal parameters, mixed `value` and `source`, unknown fields, raw `.sql`, executable hooks, and arbitrary commands are rejected.
 
+Question marks inside quoted strings, quoted identifiers, and SQL comments are data, not placeholders. Foreign-key checks remain enabled while migrations run, so create and seed referenced parent rows before child rows. Referential-integrity failures stop installation and trigger rollback.
+
 ## Preparing a clean ZIP from another domain
 
 1. Build production dependencies and frontend assets in a trusted build system.
-2. Make a clean release copy. Exclude `.env`, credentials, private keys, `.git`, logs, cache, sessions, test output, backups, and customer uploads.
+2. Make a clean release copy. Exclude `.env`, credentials, private keys, `.git`, framework runtime logs/caches/sessions, test output, backups, compiled Laravel views, and customer uploads. Keep dependency source paths such as `vendor/psr/cache` and `vendor/symfony/cache`; their names do not make them runtime cache data.
 3. Use a sanitized database copy containing only schema and approved seed/reference data. Remove people, messages, orders, tokens, password hashes, audit data, and source-site secrets.
 4. Export MySQL/MariaDB without `DROP`, users, grants, routines, triggers, events, filesystem statements, or delimiter changes. Other database dumps must be converted offline to reviewed JSON/JSONL.
 5. Build the package root exactly as documented, validate it, and test it on a disposable HTTPS domain and pre-created empty database.
