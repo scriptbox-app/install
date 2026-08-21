@@ -23,6 +23,7 @@ use ScriptBox\Installer\ReleaseFinalizer;
 use ScriptBox\Installer\RequestLimits;
 use ScriptBox\Installer\DatabaseSession;
 use ScriptBox\Installer\InstallEngine;
+use ScriptBox\Installer\MigrationReader;
 
 $tests = [];
 function test(string $name, callable $callback): void { global $tests; $tests[$name] = $callback; }
@@ -266,8 +267,63 @@ test('schema v2 manifests allow supported PHP frameworks and structured inputs b
         'health_check' => ['path' => '/'],
     ];
     ArchiveInspector::validateManifest($manifest);
+    $manifest['database']['migrations'] = ['migrations/001.jsonl'];
+    ArchiveInspector::validateManifest($manifest);
+    $manifest['database']['migrations'] = ['migrations/unsafe.sql'];
+    expectInstallerFailure(fn () => ArchiveInspector::validateManifest($manifest), 'MANIFEST_INVALID', 400);
+    $manifest['database']['migrations'] = ['migrations/001.json'];
     $manifest['framework'] = 'nextjs';
     expectInstallerFailure(fn () => ArchiveInspector::validateManifest($manifest), 'RUNTIME_UNSUPPORTED', 400);
+});
+
+test('migration reader retains JSON compatibility and streams JSONL operations', function (): void {
+    $archive = sys_get_temp_dir() . '/scriptbox-migrations-' . bin2hex(random_bytes(4)) . '.zip';
+    $zip = new ZipArchive(); $zip->open($archive, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+    $zip->addFromString('migrations/001.json', json_encode([
+        ['driver' => 'sqlite', 'sql' => 'CREATE TABLE first_table (id INT)', 'parameters' => []],
+    ], JSON_THROW_ON_ERROR));
+    $zip->addFromString('migrations/002.jsonl',
+        json_encode(['driver' => 'sqlite', 'sql' => 'CREATE TABLE second_table (id INT)', 'parameters' => []], JSON_THROW_ON_ERROR) . "\n" .
+        json_encode(['driver' => 'sqlite', 'sql' => 'INSERT INTO second_table (id) VALUES (?)', 'parameters' => [['value' => 7]]], JSON_THROW_ON_ERROR) . "\n"
+    );
+    $zip->close();
+    try {
+        $operations = iterator_to_array(MigrationReader::operations($archive, ['database' => ['migrations' => ['migrations/001.json', 'migrations/002.jsonl']]]), false);
+        expect(count($operations) === 3);
+        expect(($operations[2]['parameters'][0]['value'] ?? null) === 7);
+    } finally { @unlink($archive); }
+});
+
+test('migration reader rejects malformed and oversized JSONL lines', function (): void {
+    foreach (["{not-json}\n", json_encode(['driver' => 'sqlite', 'sql' => 'UPDATE x SET y = 1', 'parameters' => [], 'padding' => str_repeat('x', 1024 * 1024)], JSON_THROW_ON_ERROR) . "\n"] as $content) {
+        $archive = sys_get_temp_dir() . '/scriptbox-bad-migration-' . bin2hex(random_bytes(4)) . '.zip';
+        $zip = new ZipArchive(); $zip->open($archive, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+        $zip->addFromString('migrations/001.jsonl', $content); $zip->close();
+        try { expectInstallerFailure(fn () => iterator_to_array(MigrationReader::operations($archive, ['database' => ['migrations' => ['migrations/001.jsonl']]])), 'MIGRATION_INVALID', 400); }
+        finally { @unlink($archive); }
+    }
+});
+
+test('migration reader is restartable and keeps large JSONL imports below 64 MiB', function (): void {
+    $directory = sys_get_temp_dir() . '/scriptbox-large-migration-' . bin2hex(random_bytes(4)); mkdir($directory, 0700);
+    $jsonl = $directory . '/001.jsonl'; $output = fopen($jsonl, 'wb');
+    $operation = json_encode(['driver' => 'sqlite', 'sql' => 'INSERT INTO rows_table (id,body) VALUES (?,?)', 'parameters' => [['value' => 1], ['value' => str_repeat('x', 80)]]], JSON_THROW_ON_ERROR) . "\n";
+    for ($index = 0; $index < 15000; $index++) fwrite($output, $operation);
+    fclose($output);
+    $archive = $directory . '/large.zip'; $zip = new ZipArchive(); $zip->open($archive, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+    $paths = [];
+    for ($chunk = 1; $chunk <= 7; $chunk++) { $path = 'migrations/' . str_pad((string)$chunk, 3, '0', STR_PAD_LEFT) . '.jsonl'; $paths[] = $path; $zip->addFile($jsonl, $path); }
+    $zip->close();
+    $manifest = ['database' => ['migrations' => $paths]];
+    try {
+        $partial = 0;
+        foreach (MigrationReader::operations($archive, $manifest) as $_) { $partial++; if ($partial === 10) break; }
+        expect($partial === 10, 'stream must be safely interruptible');
+        memory_reset_peak_usage();
+        $count = 0; foreach (MigrationReader::operations($archive, $manifest) as $_) $count++;
+        expect($count === 105000, 'stream must restart from the signed archive');
+        expect(memory_get_peak_usage(true) < 64 * 1024 * 1024, 'large JSONL migration exceeded 64 MiB peak memory');
+    } finally { @unlink($archive); @unlink($jsonl); @rmdir($directory); }
 });
 
 test('profile hashes use the same Unicode code-point contract as the Node publisher', function (): void {
@@ -456,6 +512,10 @@ test('token templates encode allowlisted values and migration password transform
         'source' => 'input.admin_password', 'transform' => 'password_hash', 'algorithm' => 'bcrypt',
     ], ['input.admin_password' => 'secret-password']);
     expect($documentedHash !== 'secret-password' && password_verify('secret-password', $documentedHash));
+    expect(ValueResolver::migrationParameter(['value' => 42], []) === 42);
+    expect(ValueResolver::migrationParameter(['value' => null], []) === null);
+    expectInstallerFailure(fn () => ValueResolver::migrationParameter(['value' => ['unsafe']], []), 'MIGRATION_INVALID', 400);
+    expectInstallerFailure(fn () => ValueResolver::migrationParameter(['source' => 'input.admin_password', 'value' => 'secret-password'], ['input.admin_password' => 'secret-password']), 'MIGRATION_INVALID', 400);
     expectInstallerFailure(fn () => ValueResolver::source('environment.SECRET', []), 'CONFIG_INVALID', 400);
     unlink($root . '/config/local.php'); rmdir($root . '/config'); rmdir($root);
 });
@@ -473,6 +533,22 @@ test('database recovery markers bind reset credentials to the original database'
     expect(!DatabaseSession::connect(['driver' => 'sqlite', 'path' => $second])->recoveryMarkerMatches(['driver' => 'sqlite', 'path' => $second], $digest));
     $database->resetToEmpty($config); $database->assertEmpty($config);
     unlink($first); unlink($second);
+});
+
+test('database sessions consume streamed literal operations and reject a mismatched driver', function (): void {
+    $file = sys_get_temp_dir() . '/scriptbox-stream-db-' . bin2hex(random_bytes(4)) . '.sqlite'; touch($file);
+    $config = ['driver' => 'sqlite', 'path' => $file];
+    $database = DatabaseSession::connect($config);
+    try {
+        $operations = (function (): Generator {
+            yield ['driver' => 'sqlite', 'sql' => 'CREATE TABLE imported (id INT, name TEXT)', 'parameters' => []];
+            yield ['driver' => 'sqlite', 'sql' => 'INSERT INTO imported (id,name) VALUES (?,?)', 'parameters' => [['value' => 1], ['value' => 'Demo']]];
+        })();
+        $database->applyOperations($operations, $config);
+        $pdo = new PDO('sqlite:' . $file);
+        expect($pdo->query('SELECT name FROM imported WHERE id = 1')->fetchColumn() === 'Demo');
+        expectInstallerFailure(fn () => $database->applyOperations((function (): Generator { yield ['driver' => 'mysql', 'sql' => 'UPDATE imported SET name = ?', 'parameters' => [['value' => 'Unsafe']]]; })(), $config), 'MIGRATION_INVALID', 400);
+    } finally { @unlink($file); }
 });
 
 test('journal recovery deletes only hash-bound files and completed directories', function (): void {
