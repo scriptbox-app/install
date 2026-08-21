@@ -668,7 +668,6 @@ final class Router
             'GET /api/runtime' => 'runtime',
             'GET /api/bootstrap' => 'bootstrap',
             'GET /api/status' => 'status',
-            'GET /api/media' => 'catalog_media',
             'POST /api/session' => 'session',
             'POST /api/preflight' => 'preflight',
             'POST /api/database/test' => 'database_test',
@@ -683,7 +682,6 @@ final class Router
         ];
         $key = strtoupper($method) . ' ' . $path;
         if (isset($fixed[$key])) return $fixed[$key];
-        if (strtoupper($method) === 'GET' && preg_match('#^/api/media/([A-Za-z0-9._-]{20,2048})$#', $path)) return 'catalog_media';
         if (strtoupper($method) === 'GET' && preg_match('#^/api/catalog/([A-Za-z0-9._-]{1,64})$#', $path)) return 'catalog_detail';
         if (strtoupper($method) === 'GET' && preg_match('#^/\.well-known/scriptbox-installer/([A-Za-z0-9-]{8,100})$#', $path)) return 'ownership_proof';
         if (strtoupper($method) === 'GET' && preg_match('#^/assets/[a-f0-9]{64}\.(?:js|css|json|png)$#', $path)) return 'asset';
@@ -809,67 +807,12 @@ final class Preflight
     }
 }
 
-final class MediaBuffer
-{
-    public const MAX_BYTES = 8 * 1024 * 1024;
-
-    private bool $limitExceeded = false;
-
-    public function __construct(private $stream) {}
-
-    public function write(mixed $handle, string $chunk): int
-    {
-        $stat = fstat($this->stream);
-        $bytes = is_array($stat) ? ($stat['size'] ?? null) : null;
-        if (!is_int($bytes) || strlen($chunk) > self::MAX_BYTES - $bytes) {
-            $this->limitExceeded = true;
-            return 0;
-        }
-        $written = fwrite($this->stream, $chunk);
-        return is_int($written) ? $written : 0;
-    }
-
-    public function limitExceeded(): bool
-    {
-        return $this->limitExceeded;
-    }
-
-    public function assertWithinLimit(): void
-    {
-        if ($this->limitExceeded) throw new InstallerException('Catalog media size is invalid', 'MEDIA_SIZE_INVALID', 502);
-    }
-
-    public static function validatedSize($stream): int
-    {
-        $stat = fstat($stream);
-        $bytes = is_array($stat) ? ($stat['size'] ?? null) : null;
-        if (!is_int($bytes) || $bytes < 1 || $bytes > self::MAX_BYTES) {
-            throw new InstallerException('Catalog media size is invalid', 'MEDIA_SIZE_INVALID', 502);
-        }
-        return $bytes;
-    }
-}
-
-final class CatalogMedia
-{
-    private const TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif'];
-
-    public static function validate(bool $transportSucceeded, int $status, string $contentType, $stream): array
-    {
-        if (!$transportSucceeded) throw new InstallerException('Catalog media download failed', 'MEDIA_DOWNLOAD_FAILED', 502);
-        if ($status !== 200) throw new InstallerException('Catalog media upstream response is unavailable', 'MEDIA_UPSTREAM_STATUS', 502);
-        $type = trim(explode(';', strtolower($contentType))[0]);
-        if (!in_array($type, self::TYPES, true)) throw new InstallerException('Catalog media type is unsupported', 'MEDIA_TYPE_UNSUPPORTED', 502);
-        return ['content_type' => $type, 'bytes' => MediaBuffer::validatedSize($stream)];
-    }
-}
-
 final class ApiClient
 {
     private const METHODS = [
         'GET /bootstrap', 'POST /sessions/verify', 'POST /catalog/search',
         'GET /catalog/{id}', 'POST /licenses/free', 'POST /artifacts/{id}/authorize',
-        'POST /licenses/{id}/activate', 'POST /events', 'GET /catalog/media', 'GET /catalog/media/{id}',
+        'POST /licenses/{id}/activate', 'POST /events',
     ];
 
     public function __construct(private readonly string $baseUrl, private readonly int $timeout = 20)
@@ -942,33 +885,15 @@ final class ApiClient
         Crypto::verifyFile($destination, $expectedHash, $expectedBytes);
     }
 
-    public function streamCatalogMedia(string $token): void
-    {
-        if (!preg_match('/^[A-Za-z0-9._-]{20,2048}$/', $token)) throw new InstallerException('Catalog media token is invalid', 'MEDIA_NOT_FOUND', 404);
-        $path = '/catalog/media?token=' . rawurlencode($token);
-        $this->assertAllowed('GET', $path);
-        $temporary = tmpfile();
-        if ($temporary === false) throw new InstallerException('Cannot create media buffer', 'MEDIA_UNAVAILABLE', 502);
-        $buffer = new MediaBuffer($temporary);
-        $handle = curl_init($this->baseUrl . $path);
-        curl_setopt_array($handle, [CURLOPT_WRITEFUNCTION => [$buffer, 'write'], CURLOPT_FOLLOWLOCATION => false, CURLOPT_CONNECTTIMEOUT => 8, CURLOPT_TIMEOUT => 20, CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2, CURLOPT_PROTOCOLS => CURLPROTO_HTTPS]);
-        $ok = curl_exec($handle); $status = curl_getinfo($handle, CURLINFO_RESPONSE_CODE); $type = (string)curl_getinfo($handle, CURLINFO_CONTENT_TYPE); curl_close($handle);
-        try {
-            $buffer->assertWithinLimit();
-            $media = CatalogMedia::validate($ok === true, $status, $type, $temporary);
-            header('Content-Type: ' . $media['content_type']); header('Content-Length: ' . $media['bytes']); header('Cache-Control: private, max-age=3600'); rewind($temporary); fpassthru($temporary);
-        } finally {
-            fclose($temporary);
-        }
-    }
-
     private function assertAllowed(string $method, string $path): void
     {
-        $static = ['/bootstrap', '/sessions/verify', '/catalog/search', '/catalog/media', '/licenses/free', '/events'];
+        $static = ['/bootstrap', '/sessions/verify', '/catalog/search', '/licenses/free', '/events'];
         $normalizedPath = parse_url($path, PHP_URL_PATH) ?: $path;
+        if ($normalizedPath === '/catalog/media' || str_starts_with($normalizedPath, '/catalog/media/')) {
+            throw new InstallerException('Remote operation is not allowlisted', 'API_OPERATION_DENIED');
+        }
         if (!in_array($normalizedPath, $static, true)) {
             $normalizedPath = preg_replace('#^/catalog/[A-Za-z0-9._-]+$#', '/catalog/{id}', $normalizedPath);
-            $normalizedPath = preg_replace('#^/catalog/media/[A-Za-z0-9._-]{20,2048}$#', '/catalog/media/{id}', $normalizedPath);
             $normalizedPath = preg_replace('#^/artifacts/[A-Za-z0-9._-]+/authorize$#', '/artifacts/{id}/authorize', $normalizedPath);
             $normalizedPath = preg_replace('#^/licenses/[A-Za-z0-9._-]+/activate$#', '/licenses/{id}/activate', $normalizedPath);
         }
@@ -1711,12 +1636,6 @@ final class Application
             $route = Router::resolve($method, $uri);
             if ($route === 'shell') { $this->shell(); return; }
             if ($route === 'asset') { $this->asset(parse_url($uri, PHP_URL_PATH)); return; }
-            if ($route === 'catalog_media') {
-                parse_str((string)(parse_url($uri, PHP_URL_QUERY) ?? ''), $query);
-                $token = (string)($query['token'] ?? basename(parse_url($uri, PHP_URL_PATH)));
-                $this->api->streamCatalogMedia($token);
-                return;
-            }
             if ($route === 'ownership_proof') { $this->ownershipProof(parse_url($uri, PHP_URL_PATH)); return; }
             if ($method !== 'GET') $this->csrf($headers);
             $body = $rawBody === '' ? [] : json_decode($rawBody, true, 32, JSON_THROW_ON_ERROR);

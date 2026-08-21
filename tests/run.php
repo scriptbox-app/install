@@ -14,8 +14,6 @@ use ScriptBox\Installer\ApiClient;
 use ScriptBox\Installer\Application;
 use ScriptBox\Installer\AssetManager;
 use ScriptBox\Installer\BuildIdentity;
-use ScriptBox\Installer\CatalogMedia;
-use ScriptBox\Installer\MediaBuffer;
 use ScriptBox\Installer\OwnershipProof;
 use ScriptBox\Installer\OriginDetector;
 use ScriptBox\Installer\TargetResolver;
@@ -217,7 +215,6 @@ test('router exposes only fixed local API operations', function (): void {
     expect(Router::resolve('GET', '/api/runtime') === 'runtime');
     expect(Router::resolve('POST', '/api/catalog/search') === 'catalog_search');
     expect(Router::resolve('GET', '/api/catalog/SCR-001') === 'catalog_detail');
-    expect(Router::resolve('GET', '/api/media?token=header.payload.signature') === 'catalog_media');
     expect(Router::resolve('GET', '/assets/' . str_repeat('a', 64) . '.json') === 'asset');
     expect(Router::resolve('POST', '/api/preflight') === 'preflight');
     expect(Router::resolve('POST', '/api/database/test') === 'database_test');
@@ -337,84 +334,14 @@ test('an activated license is an irreversible boundary for local rollback', func
     expect(!InstallEngine::rollbackAllowedAfterActivation(true));
 });
 
-test('API allowlist accepts the fixed catalog media query route', function (): void {
+test('direct-only media removes local and remote proxy routes while preserving HTTPS image CSP', function (): void {
+    expectThrows(fn () => Router::resolve('GET', '/api/media?token=header.payload.signature'), 'not found');
+    expectThrows(fn () => Router::resolve('GET', '/api/media/header.payload.signature'), 'not found');
     $client = new ApiClient('https://example.invalid/installer/v1');
     $assertAllowed = new ReflectionMethod($client, 'assertAllowed');
-    $assertAllowed->invoke($client, 'GET', '/catalog/media?token=header.payload.signature');
-    expectThrows(fn () => $assertAllowed->invoke($client, 'GET', '/admin?token=header.payload.signature'), 'allowlisted');
-});
-
-test('media validation measures buffered bytes when the stream cursor is zero', function (): void {
-    $temporary = tmpfile();
-    expect($temporary !== false, 'Cannot create temporary media stream');
-    fwrite($temporary, 'catalog-image-bytes');
-    rewind($temporary);
-    expect(ftell($temporary) === 0, 'Regression setup requires a zero cursor');
-    expect(MediaBuffer::validatedSize($temporary) === 19, 'Media validation must use the buffered stream size, not its cursor');
-    fclose($temporary);
-});
-
-test('bounded media writer aborts before accepting bytes beyond the size limit', function (): void {
-    $temporary = tmpfile();
-    expect($temporary !== false, 'Cannot create temporary media stream');
-    $buffer = new MediaBuffer($temporary);
-    $limit = str_repeat('x', MediaBuffer::MAX_BYTES);
-    expect($buffer->write(null, $limit) === MediaBuffer::MAX_BYTES, 'Writer must accept bytes through the size limit');
-    expect($buffer->write(null, 'x') === 0, 'Writer must abort the transfer before writing an oversized chunk');
-    expect($buffer->limitExceeded(), 'Writer must retain the safe oversized-media outcome');
-    expectInstallerFailure(fn () => $buffer->assertWithinLimit(), 'MEDIA_SIZE_INVALID', 502);
-    expect(fstat($temporary)['size'] === MediaBuffer::MAX_BYTES, 'Writer must not buffer bytes beyond the limit');
-    fclose($temporary);
-});
-
-test('catalog media validation accepts a supported type after normalizing its parameters', function (): void {
-    $temporary = tmpfile();
-    expect($temporary !== false, 'Cannot create temporary media stream');
-    fwrite($temporary, 'catalog-image-bytes');
-    expect(CatalogMedia::validate(true, 200, 'image/png; charset=binary', $temporary) === ['content_type' => 'image/png', 'bytes' => 19]);
-    fclose($temporary);
-});
-
-test('catalog media validation reports a transport failure without cURL details', function (): void {
-    $temporary = tmpfile();
-    expect($temporary !== false, 'Cannot create temporary media stream');
-    expectInstallerFailure(fn () => CatalogMedia::validate(false, 0, '', $temporary), 'MEDIA_DOWNLOAD_FAILED', 502);
-    fclose($temporary);
-});
-
-test('catalog media validation reports a non-200 upstream response', function (): void {
-    $temporary = tmpfile();
-    expect($temporary !== false, 'Cannot create temporary media stream');
-    expectInstallerFailure(fn () => CatalogMedia::validate(true, 503, 'image/png', $temporary), 'MEDIA_UPSTREAM_STATUS', 502);
-    fclose($temporary);
-});
-
-test('catalog media validation reports an unsupported content type', function (): void {
-    $temporary = tmpfile();
-    expect($temporary !== false, 'Cannot create temporary media stream');
-    fwrite($temporary, 'catalog-image-bytes');
-    expectInstallerFailure(fn () => CatalogMedia::validate(true, 200, 'text/html', $temporary), 'MEDIA_TYPE_UNSUPPORTED', 502);
-    fclose($temporary);
-});
-
-test('catalog media validation reports an empty media buffer', function (): void {
-    $temporary = tmpfile();
-    expect($temporary !== false, 'Cannot create temporary media stream');
-    expectInstallerFailure(fn () => CatalogMedia::validate(true, 200, 'image/png', $temporary), 'MEDIA_SIZE_INVALID', 502);
-    fclose($temporary);
-});
-
-test('catalog media validation reports an oversized media buffer', function (): void {
-    $temporary = tmpfile();
-    expect($temporary !== false, 'Cannot create temporary media stream');
-    expect(ftruncate($temporary, 8 * 1024 * 1024 + 1) === true, 'Cannot create oversized media fixture');
-    expectInstallerFailure(fn () => CatalogMedia::validate(true, 200, 'image/png', $temporary), 'MEDIA_SIZE_INVALID', 502);
-    fclose($temporary);
-});
-
-test('catalog media rejects an invalid local token with a 404', function (): void {
-    $client = new ApiClient('https://example.invalid/installer/v1');
-    expectInstallerFailure(fn () => $client->streamCatalogMedia('invalid token'), 'MEDIA_NOT_FOUND', 404);
+    expectThrows(fn () => $assertAllowed->invoke($client, 'GET', '/catalog/media?token=header.payload.signature'), 'allowlisted');
+    expectThrows(fn () => $assertAllowed->invoke($client, 'GET', '/catalog/media/header.payload.signature'), 'allowlisted');
+    expect(str_contains(Application::contentSecurityPolicy(), "img-src 'self' data: https:"));
 });
 
 test('runtime build identity uses the configured release timestamp and running artifact hash', function (): void {
