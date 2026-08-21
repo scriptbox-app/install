@@ -7,11 +7,12 @@ This public checklist is for the hosting administrator deploying `install.php`. 
 - [ ] Use a dedicated HTTPS domain or subdomain with a valid certificate.
 - [ ] Confirm PHP-FPM and CLI use PHP 8.3 or newer.
 - [ ] Enable cURL, OpenSSL, JSON, ZIP, and the selected database extension.
-- [ ] Create an empty target directory; do not place the installer over an existing site.
+- [ ] Upload the signed four-file bundle under `/install`, or use the reviewed standalone `install.php` deployment.
+- [ ] Confirm the intended root or relative destination is empty; do not place the installer over an existing site.
 - [ ] Make the target writable by the PHP-FPM pool user with least privilege; never use `0777`.
 - [ ] Create an empty database and restricted database user when required.
 - [ ] Confirm outbound HTTPS to `api.scriptbox.app` is allowed.
-- [ ] Download `install.php` and its checksum from the same approved release.
+- [ ] Download `index.php`, `install.php`, `install.php.sha256`, and `release.json` from the same approved release.
 - [ ] Compare `sha256sum install.php` with the published value.
 - [ ] Record that SHA-256 fingerprint for the post-upload runtime check.
 
@@ -19,11 +20,11 @@ This public checklist is for the hosting administrator deploying `install.php`. 
 
 - [ ] Open the installer only through HTTPS.
 - [ ] Request `install.php/api/runtime` and confirm `data.build.artifact_sha256` matches the recorded release fingerprint and `data.build.release_timestamp` is the expected release value.
-- [ ] Confirm the runtime panel reports supported PHP, required extensions, and `target: writable`.
+- [ ] Confirm the wizard reports supported PHP/extensions and the selected relative target as writable, empty, or safely creatable without revealing an absolute path.
 - [ ] Confirm the read-only detected origin matches the deployed HTTPS domain; no browser domain input is required.
 - [ ] Read the privacy notice before consenting.
 - [ ] Select only a free package marked compatible with the detected runtime/database.
-- [ ] Reconfirm that the database is empty before submission.
+- [ ] Use the wizard database test and reconfirm that the pre-created database is empty before submission.
 - [ ] Keep the browser open through download, validation, migration, promotion, health check, and activation.
 
 ## Successful completion
@@ -31,7 +32,7 @@ This public checklist is for the hosting administrator deploying `install.php`. 
 - [ ] Confirm the completion screen and permanent installer lock.
 - [ ] Open the installed application through its final HTTPS URL.
 - [ ] Confirm sensitive configuration files are not publicly downloadable.
-- [ ] Remove installation access if the release instructs you to do so; do not delete private state before success is confirmed.
+- [ ] Accept automatic minimal-bundle cleanup only for a verified four-file release. Git checkouts or directories with unknown files require manual removal after permanent lock.
 - [ ] Store the script/version/license reference needed for support without storing database credentials.
 
 ## When installation fails
@@ -42,11 +43,11 @@ This public checklist is for the hosting administrator deploying `install.php`. 
 4. Allow automatic rollback to finish.
 5. Do not manually delete journaled files or retry if the state is `recovery_required`.
 
-For a catalog image problem, retain only the `MEDIA_*` code and diagnostic ID. `MEDIA_NOT_FOUND` means the local token is not usable; `MEDIA_DOWNLOAD_FAILED` and `MEDIA_UPSTREAM_STATUS` indicate a remote retrieval problem; `MEDIA_TYPE_UNSUPPORTED` and `MEDIA_SIZE_INVALID` mean the installer safely rejected the response. Never share a media token, response body, or URL.
+Current catalog images load from sanitized public HTTPS URLs. A failed image keeps its placeholder and does not stop installation. Legacy rollback releases may still report `MEDIA_*` diagnostics for the tokenized proxy route; never share a token, response body, or private URL.
 
 ## Recovery
 
-For recovery, stop traffic, preserve the redacted journal, remove only journaled promoted files, restore the pre-created database to empty, then clear recovery state only through an audited operator procedure.
+For recovery, stop traffic and preserve the redacted journal. Run the CLI for file-only cleanup. When database mutation is recorded, reopen the browser wizard and supply the original database connection; the installer verifies its private recovery-marker digest before resetting it. A different same-driver database is rejected.
 
 ```bash
 php install.php status

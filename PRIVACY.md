@@ -26,6 +26,8 @@ Policy `2026-08-19` permits only:
 
 `install.php` keeps sessions, cached signed UI assets, download progress, the rollback journal, and transient ownership proofs in a private state directory outside the document root. Files use restrictive permissions. Database passwords are used in memory for the requested installation and are excluded from persisted state and diagnostics.
 
+Catalog preview images load directly from administrator-controlled public HTTPS image URLs with no referrer. The image host can still observe the visitor's public IP and normal transport metadata. Images are presentation-only and do not receive installer cookies, authorization headers, database values, or the verified origin as a referrer.
+
 ## Retention
 
 Detailed consented events expire after 30 days. Minimal license identity is retained only while needed to operate installation and reinstallation controls, then revoked or anonymized according to the service policy. Temporary ownership proofs and download authorizations expire within minutes and are single-purpose.

@@ -1,6 +1,6 @@
 # ScriptBox Signed Installer
 
-ScriptBox provides a single-file PHP installer for deploying approved static and PHP applications from the ScriptBox catalog. A user uploads `install.php`, opens it over HTTPS, completes the guided React interface, and lets the installer perform validated download, configuration, database migration, health checking, and rollback.
+ScriptBox provides a dependency-free PHP installer for deploying approved static and PHP applications from the ScriptBox catalog. A user uploads the four-file release bundle (or standalone `install.php`), opens it over HTTPS, completes the resumable React wizard, and lets the installer perform validated download, configuration, database migration, health checking, and rollback.
 
 ```text
 Browser → install.php → signed ScriptBox API → private application package
@@ -14,7 +14,7 @@ This repository is public. It contains no production private keys, API credentia
 
 ## Why use it
 
-- One portable `install.php` works with cPanel, aaPanel, Apache, Nginx/PHP-FPM, VPS, and compatible cloud hosting.
+- A minimal `index.php` launcher gives `/install/` a clean URL; standalone `install.php` remains supported.
 - The browser interface does not need Node.js on the customer server.
 - Signed bootstrap metadata pins the approved React assets and their exact SHA-256 hashes and sizes.
 - Application archives are private, short-lived, and verified before extraction.
@@ -25,7 +25,7 @@ This repository is public. It contains no production private keys, API credentia
 
 ## Supported applications
 
-Version 1 installs self-contained applications with runtime type `static` or `php`. Node.js and Next.js applications may appear in the catalog but cannot be automatically installed. Packages cannot install operating-system packages, PHP extensions, Composer dependencies, npm dependencies, services, cron jobs, or arbitrary commands.
+Version 1 installs complete `static` and `php` packages using the `static`, `laravel`, `codeigniter3`, `codeigniter4`, `cakephp`, or `raw_php` profile. Node.js and Next.js applications may appear in the catalog but cannot be automatically installed. Packages cannot install operating-system packages, PHP extensions, Composer dependencies, npm dependencies, services, cron jobs, or arbitrary commands.
 
 Database support depends on extensions already installed in PHP:
 
@@ -43,7 +43,7 @@ Database support depends on extensions already installed in PHP:
 - PHP 8.3 or newer for both PHP-FPM and CLI commands.
 - PHP extensions: cURL, OpenSSL, JSON, and ZIP.
 - A publicly reachable HTTPS hostname with a valid certificate.
-- An empty, dedicated installation directory writable by the PHP-FPM pool user.
+- A writable document root. The selected destination must be empty; only the verified `/install` control bundle is ignored for a root installation.
 - A pre-created empty database when the selected application needs one.
 - Outbound HTTPS access from PHP to `api.scriptbox.app`.
 - Enough disk space for the compressed archive, staging copy, promoted application, and temporary rollback data.
@@ -55,13 +55,13 @@ Do not use a directory containing an existing website. Do not use mode `0777` to
 1. Loads only its compiled API URL and pinned public signing keys.
 2. Requests the signed installer bootstrap over HTTPS.
 3. Verifies the key ID, RS256 signature, protocol version, issue/expiry times, and UI metadata.
-4. Downloads the React JavaScript, CSS, and optional Lottie JSON into private state and verifies every size and SHA-256 hash. Only JavaScript and CSS are injected; animations are served as same-origin data.
+4. Downloads the React JavaScript, CSS, and ScriptBox PNG logo into private state and verifies every size and SHA-256 hash. New UI releases contain no Lottie runtime or animation JSON.
 5. Reports PHP, extension, database-driver, and target-directory capabilities to the local UI.
 6. Stores a one-time ownership proof outside the document root and exposes it through the installer’s same-origin route.
 7. Asks the API to verify the public HTTPS origin without following redirects or accepting private/reserved addresses.
 8. Shows the anonymous, sanitized catalog immediately. Ownership and consent are requested only after Install is pressed.
 9. Issues an anonymous idempotent license for a compatible free package.
-10. Downloads the private ZIP with a short-lived authorization and resumable byte ranges.
+10. Creates a private run ID and downloads the private ZIP with a short-lived authorization and resumable byte ranges. Safe progress can be read again after a browser refresh; credentials are requested again when a resumed phase needs them.
 11. Verifies signed package metadata, archive limits, inventory, permissions, and paths.
 12. Extracts into staging, writes configuration safely, confirms the target and database are empty, and runs ordered data operations.
 13. Promotes files with a rollback journal, performs the HTTPS health check, activates the license, cleans temporary data, and permanently locks the successful installer.
@@ -71,8 +71,18 @@ Paid items show a preview only. Version 1 does not take payment or start checkou
 ## cPanel, aaPanel, or File Manager installation
 
 1. Create a new domain or subdomain with HTTPS enabled.
-2. Create an empty directory dedicated to the new application.
-3. Upload the released `install.php` into that directory.
+2. Create an empty `install/` control directory in the document root.
+3. Upload the complete minimal release bundle:
+
+   ```text
+   install/
+   ├── index.php
+   ├── install.php
+   ├── install.php.sha256
+   └── release.json
+   ```
+
+   A legacy standalone deployment may upload only `install.php` and open it directly.
 4. Compare the uploaded file with the published checksum:
 
    ```bash
@@ -88,15 +98,15 @@ Paid items show a preview only. Version 1 does not take payment or start checkou
    find "$install_target" -type f -exec chmod 0640 {} \;
    ```
 
-6. Open either a root or subdirectory installation URL:
+6. Open either the clean launcher or standalone URL:
 
    ```text
-   https://example.com/install.php
+   https://example.com/install/
    https://example.com/install/install.php
    ```
 
 7. Browse the catalog and open script details. The installer detects the public HTTPS origin from the request; there is no editable domain field.
-8. Press Install on a compatible free application, review requirements and privacy consent, then provide an empty database when requested. The one-time ownership proof is created and removed automatically.
+8. Press Install on a compatible free application. Choose a signed version, refresh the server checks, select `/` or a safe relative destination such as `shop`, review privacy consent, enter only package-declared setup fields, and test an empty database when requested. The one-time ownership proof is created and removed automatically.
 9. Keep the page open until the completion screen confirms activation and permanent lock. Paid items only open a phase-2 preview and cannot charge you.
 
 Verify the server capability response when the UI reports a permission problem:
@@ -127,7 +137,7 @@ The built-in server listens only on loopback. Put it behind an HTTPS reverse pro
 | `php install.php init` | Initialize private installer state |
 | `php install.php status` | Show installation state and the last sanitized diagnostic |
 | `php install.php serve --public-url=...` | Start the loopback browser endpoint |
-| `php install.php recover` | Retry journal-based cleanup after `recovery_required` |
+| `php install.php recover` | Retry hash-bound file cleanup; database recovery continues in the browser with the original connection |
 
 On aaPanel, an explicit binary may be required:
 
@@ -137,7 +147,9 @@ On aaPanel, an explicit binary may be required:
 
 ## Browser workflow
 
-The Project 4-style UI displays the catalog and script details immediately. Server inspection, privacy consent, automatic HTTPS ownership verification, database configuration, installation progress, and completion or recovery guidance appear inside the installation flow after Install is pressed. Runtime or API errors remain in a danger alert above the usable catalog.
+The Project 4-style UI first displays a page-shaped CSS skeleton, then the catalog and script details. Catalog images use API-validated public HTTPS URLs with no referrer; offscreen images load lazily and failures retain a fixed-size fallback. Server inspection, target selection, privacy consent, automatic HTTPS ownership verification, structured application setup, database testing, a redacted configuration preview, real progress, and completion/recovery guidance appear only after Install is pressed. Runtime or API errors remain in a danger alert above the usable catalog.
+
+The target field never reveals an absolute server path. `/` means the validated document root. Relative paths use no more than five safe segments, cannot be hidden/reserved or point at the installer control directory, and cannot escape through a symlink. Existing targets must be empty; a missing target is created only below a writable validated parent.
 
 The UI never stores credentials or bearer tokens in local storage or JavaScript cookies. Sensitive sessions use secure, HttpOnly, SameSite cookies managed by `install.php`.
 
@@ -150,11 +162,11 @@ php install.php status
 php install.php recover
 ```
 
-Do not delete the journal, private state, or partially installed files manually before recording the diagnostic. Follow the [error catalog](docs/errors.md) and [deployment and recovery checklist](docs/deployment-checklist.md).
+Do not delete the journal, private state, or partially installed files manually before recording the diagnostic. If migration was interrupted, reopen the wizard and enter the original database connection. A random pre-migration marker binds destructive reset to that exact database; a different same-driver database is rejected. Credentials remain request-only. Follow the [error catalog](docs/errors.md) and [deployment and recovery checklist](docs/deployment-checklist.md).
 
 If the React UI cannot start, the server-rendered page shows a stable error code, safe message, and diagnostic ID. The same sanitized record is available through the CLI status command and PHP server log.
 
-Catalog preview images are fetched only through the local `install.php/api/media?token=...` route. If a preview image fails, use the reported `MEDIA_*` code to distinguish a malformed token, download failure, upstream response, content type, or size validation problem. Do not paste media tokens into support tickets or try an upstream media URL directly.
+Current catalog preview images load directly from API-validated public HTTPS URLs using `no-referrer`. The legacy `install.php/api/media?token=...` route remains temporarily for release rollback but is not used by the current UI. Never place private artifact or storage URLs in catalog image fields.
 
 ## Privacy summary
 
@@ -174,8 +186,10 @@ End users normally download the released single file. Contributors can rebuild i
 
 ```bash
 php tests/run.php
+php build/compile.php
 php build/release.php
 php -l install.php
+php -l index.php
 sha256sum -c install.php.sha256
 ```
 
@@ -188,6 +202,7 @@ Changing `config/release.php` does not change an already generated `install.php`
 - [Stable error catalog](docs/errors.md)
 - [Installer protocol](docs/protocol.md)
 - [Package format](docs/package-format.md)
+- [Wizard, target, resume, and cleanup](docs/wizard.md)
 - [Release verification](docs/release.md)
 - [Threat model](docs/threat-model.md)
 - [MCP development server](docs/mcp.md)

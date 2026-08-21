@@ -13,4 +13,15 @@ $compiled = rtrim($source) . "\n\ndefine('SCRIPTBOX_COMPILED_RELEASE', " . var_e
 $compiled = str_replace("\r\n", "\n", $compiled);
 if (file_put_contents($root . '/install.php', $compiled, LOCK_EX) === false) throw new RuntimeException('Unable to write install.php');
 chmod($root . '/install.php', 0644);
+$launcher = <<<'PHP'
+<?php
+declare(strict_types=1);
+
+define('SCRIPTBOX_LAUNCHER', true);
+define('SCRIPTBOX_INSTALLER_FILE', __DIR__ . '/install.php');
+require SCRIPTBOX_INSTALLER_FILE;
+PHP;
+$launcher .= "\n";
+if (file_put_contents($root . '/index.php', $launcher, LOCK_EX) === false) throw new RuntimeException('Unable to write index.php');
+chmod($root . '/index.php', 0644);
 fwrite(STDOUT, hash('sha256', $compiled) . "  install.php\n");

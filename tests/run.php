@@ -18,6 +18,13 @@ use ScriptBox\Installer\CatalogMedia;
 use ScriptBox\Installer\MediaBuffer;
 use ScriptBox\Installer\OwnershipProof;
 use ScriptBox\Installer\OriginDetector;
+use ScriptBox\Installer\TargetResolver;
+use ScriptBox\Installer\InstallationRun;
+use ScriptBox\Installer\ValueResolver;
+use ScriptBox\Installer\ReleaseFinalizer;
+use ScriptBox\Installer\RequestLimits;
+use ScriptBox\Installer\DatabaseSession;
+use ScriptBox\Installer\InstallEngine;
 
 $tests = [];
 function test(string $name, callable $callback): void { global $tests; $tests[$name] = $callback; }
@@ -59,9 +66,37 @@ test('committed installer checksum and release metadata match the compiled artif
     $metadata = json_decode((string)file_get_contents($root . '/release.json'), true, 32, JSON_THROW_ON_ERROR);
     expect(($checksumParts[0] ?? '') === $actualHash, 'install.php.sha256 is stale');
     expect(($metadata['installer_sha256'] ?? '') === $actualHash, 'release.json installer hash is stale');
+    expect(is_file($root . '/index.php'), 'index.php launcher is missing');
+    expect(($metadata['launcher_sha256'] ?? '') === hash_file('sha256', $root . '/index.php'), 'release.json launcher hash is stale');
+    expect(($metadata['bundle_files'] ?? []) === ['index.php', 'install.php', 'install.php.sha256', 'release.json'], 'release bundle inventory is stale');
     $release = require $root . '/config/release.php';
     expect(($metadata['signing_key_ids'] ?? []) === array_keys($release['public_keys']), 'release signing key ids are stale');
     expect(($metadata['release_timestamp'] ?? '') === $release['release_timestamp'], 'release.json timestamp is stale');
+});
+
+test('installer cleanup accepts only an exact checksum-bound minimal bundle', function (): void {
+    $directory = sys_get_temp_dir() . '/scriptbox-finalize-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0700);
+    try {
+        file_put_contents($directory . '/install.php', '<?php echo "installer";');
+        file_put_contents($directory . '/index.php', '<?php require __DIR__ . "/install.php";');
+        $installerHash = hash_file('sha256', $directory . '/install.php');
+        $metadata = ['installer_sha256' => $installerHash, 'launcher_sha256' => hash_file('sha256', $directory . '/index.php'), 'bundle_files' => ['index.php', 'install.php', 'install.php.sha256', 'release.json']];
+        file_put_contents($directory . '/install.php.sha256', $installerHash . "  install.php\n");
+        file_put_contents($directory . '/release.json', json_encode($metadata, JSON_THROW_ON_ERROR));
+        expect(ReleaseFinalizer::eligible($directory), 'exact minimal bundle should be cleanup eligible');
+        file_put_contents($directory . '/unknown.txt', 'user file');
+        expect(!ReleaseFinalizer::eligible($directory), 'unknown files must prevent automatic cleanup');
+        unlink($directory . '/unknown.txt');
+        mkdir($directory . '/.git');
+        expect(!ReleaseFinalizer::eligible($directory), 'Git checkouts must prevent automatic cleanup');
+        rmdir($directory . '/.git');
+        file_put_contents($directory . '/install.php.sha256', str_repeat('0', 64) . "  install.php\n");
+        expect(!ReleaseFinalizer::eligible($directory), 'checksum mismatches must prevent automatic cleanup');
+    } finally {
+        foreach (array_diff(scandir($directory) ?: [], ['.', '..']) as $entry) is_dir($directory . '/' . $entry) ? @rmdir($directory . '/' . $entry) : @unlink($directory . '/' . $entry);
+        @rmdir($directory);
+    }
 });
 
 test('installer shell reports and records a safe bootstrap diagnostic', function (): void {
@@ -133,14 +168,138 @@ test('installer state lock is exclusive', function (): void {
     $first->removeAll();
 });
 
+test('request size enforcement parses bytes instead of the Content-Length digit count', function (): void {
+    RequestLimits::assertBodyLength('1048576');
+    expectInstallerFailure(fn () => RequestLimits::assertBodyLength('1048577'), 'REQUEST_TOO_LARGE', 413);
+    expectInstallerFailure(fn () => RequestLimits::assertBodyLength('invalid'), 'REQUEST_SIZE_INVALID', 400);
+    $stream = fopen('php://temp', 'w+b');
+    fwrite($stream, str_repeat('x', RequestLimits::MAX_BODY_BYTES + 1)); rewind($stream);
+    expectInstallerFailure(fn () => RequestLimits::readBody($stream), 'REQUEST_TOO_LARGE', 413);
+    fclose($stream);
+});
+
 test('router exposes only fixed local API operations', function (): void {
     expect(Router::resolve('GET', '/api/runtime') === 'runtime');
     expect(Router::resolve('POST', '/api/catalog/search') === 'catalog_search');
     expect(Router::resolve('GET', '/api/catalog/SCR-001') === 'catalog_detail');
     expect(Router::resolve('GET', '/api/media?token=header.payload.signature') === 'catalog_media');
     expect(Router::resolve('GET', '/assets/' . str_repeat('a', 64) . '.json') === 'asset');
+    expect(Router::resolve('POST', '/api/preflight') === 'preflight');
+    expect(Router::resolve('POST', '/api/database/test') === 'database_test');
+    expect(Router::resolve('POST', '/api/install/prepare') === 'install_prepare');
+    expect(Router::resolve('POST', '/api/install/advance') === 'install_advance');
+    expect(Router::resolve('GET', '/api/install/status') === 'install_status');
+    expect(Router::resolve('POST', '/api/install/cancel') === 'install_cancel');
+    expect(Router::resolve('POST', '/api/finalize') === 'finalize');
+    expect(Router::resolve('GET', '/assets/' . str_repeat('a', 64) . '.png') === 'asset');
     expectThrows(fn () => Router::resolve('POST', '/api/proxy'), 'not found');
     expectThrows(fn () => Router::resolve('GET', '/api/fetch?url=https://evil.example'), 'not found');
+});
+
+test('target resolver defaults to document root and validates bounded relative subfolders', function (): void {
+    $root = sys_get_temp_dir() . '/scriptbox-target-' . bin2hex(random_bytes(4));
+    mkdir($root . '/install', 0755, true);
+    file_put_contents($root . '/install/install.php', 'installer');
+    $default = TargetResolver::inspect($root, $root . '/install', '');
+    expect($default['relative'] === '/');
+    expect($default['empty'] === true, 'The verified installer control directory must be ignored');
+    $nested = TargetResolver::inspect($root, $root . '/install', 'apps/shop');
+    expect($nested['relative'] === 'apps/shop');
+    expect($nested['can_create'] === true);
+    expectThrows(fn () => TargetResolver::inspect($root, $root . '/install', '../outside'), 'target');
+    expectThrows(fn () => TargetResolver::inspect($root, $root . '/install', '.hidden'), 'target');
+    expectThrows(fn () => TargetResolver::inspect($root, $root . '/install', 'install'), 'control');
+    unlink($root . '/install/install.php'); rmdir($root . '/install'); rmdir($root);
+});
+
+test('standalone install.php is the only ignored root entry', function (): void {
+    $root = sys_get_temp_dir() . '/scriptbox-standalone-' . bin2hex(random_bytes(4));
+    mkdir($root, 0755);
+    $installer = $root . '/install.php';
+    file_put_contents($installer, 'installer');
+    expect(TargetResolver::inspect($root, $installer, '')['empty'] === true);
+    file_put_contents($root . '/existing.php', 'website');
+    expect(TargetResolver::inspect($root, $installer, '')['empty'] === false);
+    unlink($root . '/existing.php'); unlink($installer); rmdir($root);
+});
+
+test('schema v2 manifests allow supported PHP frameworks and structured inputs but block Node', function (): void {
+    $manifest = [
+        'schema_version' => 2, 'script_id' => 'SCR-001', 'version' => '2.0.0', 'framework' => 'laravel',
+        'runtime' => ['type' => 'php', 'php' => '>=8.3', 'extensions' => ['curl']],
+        'database' => ['driver' => 'mysql', 'migrations' => ['migrations/001.json']],
+        'inputs' => [['key' => 'admin_password', 'type' => 'password', 'label' => 'Password', 'secret' => true, 'minimum_length' => 12]],
+        'payload' => ['root' => 'payload', 'writable' => [['path' => 'storage', 'mode' => '0770']]],
+        'configuration' => [['path' => '.env', 'format' => 'dotenv', 'values' => ['APP_URL' => '{{app.url}}']]],
+        'health_check' => ['path' => '/'],
+    ];
+    ArchiveInspector::validateManifest($manifest);
+    $manifest['framework'] = 'nextjs';
+    expectInstallerFailure(fn () => ArchiveInspector::validateManifest($manifest), 'RUNTIME_UNSUPPORTED', 400);
+});
+
+test('profile hashes use the same Unicode code-point contract as the Node publisher', function (): void {
+    $label = " \t" . str_repeat('🧰', 119) . 'বাংলা-extra ';
+    $manifest = [
+        'schema_version' => 2, 'script_id' => 'SCR-001', 'version' => '1.2.3', 'framework' => 'laravel',
+        'runtime' => ['type' => 'php', 'php' => '>=8.3', 'extensions' => ['curl', 'zip']],
+        'database' => ['driver' => 'mysql', 'migrations' => ['database/mysql/001.json']],
+        'inputs' => [['key' => 'site_name', 'type' => 'select', 'label' => $label, 'options' => [['value' => $label, 'label' => $label]]]],
+        'payload' => ['root' => 'payload', 'writable' => [['path' => 'storage', 'mode' => '0770']]],
+        'health_check' => ['path' => '/health'],
+    ];
+    expect(ArchiveInspector::profileHash($manifest) === 'e5243e25f8843fb89c5f9d01ee2d08ac67f7e727e0811661b90e21e15624fb1b');
+});
+
+test('installation run state is resumable, bounded, and never persists request secrets', function (): void {
+    $root = sys_get_temp_dir() . '/scriptbox-run-' . bin2hex(random_bytes(4));
+    $state = new StateStore($root);
+    $run = InstallationRun::prepare($state, ['script_id' => 'SCR-001', 'version' => '2.0.0', 'target' => 'shop', 'database' => ['password' => 'secret'], 'inputs' => ['admin_password' => 'secret']]);
+    expect(($run['phase'] ?? '') === 'preflight');
+    expect(!str_contains((string)file_get_contents($state->path('run')), 'secret'));
+    $state->write('status', ['state' => 'running', 'phase' => 'download']);
+    $status = InstallationRun::status($state, $run['run_id']);
+    expect($status['run_id'] === $run['run_id']);
+    expect($status['phase'] === 'download' && $status['progress_percent'] > 0, 'run status must expose the engine phase safely');
+    expect(InstallationRun::canCancel('extract'), 'cancellation before promotion must remain safe');
+    expect(!InstallationRun::canCancel('promote') && !InstallationRun::canCancel('health') && !InstallationRun::canCancel('complete'), 'cancellation at or after promotion must be rejected');
+    expectInstallerFailure(fn () => InstallationRun::prepare($state, ['script_id' => 'SCR-001', 'version' => '2.0.0', 'target' => 'shop']), 'RUN_ACTIVE', 409);
+    expectInstallerFailure(fn () => InstallationRun::status($state, 'wrong-run'), 'RUN_NOT_FOUND', 404);
+    $state->removeAll();
+});
+
+test('installation runs are bound to the verified browser installation id', function (): void {
+    $root = sys_get_temp_dir() . '/scriptbox-run-owner-' . bin2hex(random_bytes(4));
+    $state = new StateStore($root);
+    try {
+        $run = InstallationRun::prepare($state, ['script_id' => 'SCR-001', 'version' => '2.0.0', 'target' => '/']);
+        $owner = bin2hex(random_bytes(16));
+        InstallationRun::bindOwner($state, $run['run_id'], $owner);
+        InstallationRun::assertOwner($state, $run['run_id'], $owner);
+        expectInstallerFailure(
+            fn () => InstallationRun::assertOwner($state, $run['run_id'], bin2hex(random_bytes(16))),
+            'RUN_NOT_FOUND',
+            404
+        );
+        expectInstallerFailure(
+            fn () => InstallationRun::assertOwner($state, str_repeat('0', 32), $owner),
+            'RUN_NOT_FOUND',
+            404
+        );
+    } finally {
+        $state->removeAll();
+    }
+});
+
+test('interrupted downloads keep resumable bytes but invalid artifacts do not', function (): void {
+    expect(InstallEngine::preservesPartialDownloadFor(new InstallerException('interrupted', 'DOWNLOAD_FAILED', 502)));
+    expect(InstallEngine::preservesPartialDownloadFor(new InstallerException('expired', 'DOWNLOAD_AUTHORIZATION_FAILED', 502)));
+    expect(!InstallEngine::preservesPartialDownloadFor(new InstallerException('hash mismatch', 'FILE_HASH_MISMATCH', 400)));
+});
+
+test('an activated license is an irreversible boundary for local rollback', function (): void {
+    expect(InstallEngine::rollbackAllowedAfterActivation(false));
+    expect(!InstallEngine::rollbackAllowedAfterActivation(true));
 });
 
 test('API allowlist accepts the fixed catalog media query route', function (): void {
@@ -285,6 +444,10 @@ test('preflight reports PHP and database adapters without phpinfo or secrets', f
     expect(isset($result['extensions']) && is_array($result['extensions']));
     expect(!array_key_exists('phpinfo', $result));
     expect(isset($result['databases']['sqlite']));
+    expect(Preflight::supportsPhp('>=8.3', '8.3.1'));
+    expect(!Preflight::supportsPhp('>=8.4', '8.3.1'));
+    expect(!Preflight::supportsPhp('^8.3', '8.3.1'));
+    expectInstallerFailure(fn () => Preflight::assertPackageRequirements(['runtime' => ['type' => 'php', 'php' => '>=99.0', 'extensions' => []], 'database' => ['driver' => 'none']]), 'PHP_VERSION_UNSUPPORTED', 400);
 });
 
 test('preflight blocks a target that PHP-FPM cannot write', function (): void {
@@ -303,6 +466,69 @@ test('configuration writers escape dotenv, JSON, and PHP array values', function
     $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
     foreach ($iterator as $item) $item->isDir() ? rmdir($item->getPathname()) : unlink($item->getPathname());
     rmdir($root);
+});
+
+test('signed PNG assets are served locally and direct HTTPS images are allowed by CSP', function (): void {
+    $root = sys_get_temp_dir() . '/scriptbox-png-' . bin2hex(random_bytes(4));
+    $state = new StateStore($root);
+    $bytes = "\x89PNG\r\n\x1a\nlogo";
+    $hash = hash('sha256', $bytes);
+    file_put_contents($root . '/asset-' . $hash . '.png', $bytes);
+    $asset = (new AssetManager(new ApiClient('https://example.invalid/installer/v1'), $state, []))->pathForRequest('/assets/' . $hash . '.png');
+    expect($asset['type'] === 'image/png');
+    expect(str_contains(Application::contentSecurityPolicy(), "img-src 'self' data: https:"));
+    $state->removeAll();
+});
+
+test('token templates encode allowlisted values and migration password transforms never expose plaintext', function (): void {
+    $root = sys_get_temp_dir() . '/scriptbox-template-' . bin2hex(random_bytes(4));
+    mkdir($root, 0700);
+    ConfigurationWriter::write($root, [
+        'path' => 'config/local.php', 'format' => 'token-template',
+        'template' => "<?php return ['name' => '{{input.site_name|php-string}}'];\n",
+    ], ['input.site_name' => "O'Reilly"]);
+    expect(str_contains((string)file_get_contents($root . '/config/local.php'), "O\\'Reilly"));
+    $hash = ValueResolver::migrationParameter(['source' => 'input.admin_password', 'transform' => 'bcrypt'], ['input.admin_password' => 'secret-password']);
+    expect($hash !== 'secret-password' && password_verify('secret-password', $hash));
+    $documentedHash = ValueResolver::migrationParameter([
+        'source' => 'input.admin_password', 'transform' => 'password_hash', 'algorithm' => 'bcrypt',
+    ], ['input.admin_password' => 'secret-password']);
+    expect($documentedHash !== 'secret-password' && password_verify('secret-password', $documentedHash));
+    expectInstallerFailure(fn () => ValueResolver::source('environment.SECRET', []), 'CONFIG_INVALID', 400);
+    unlink($root . '/config/local.php'); rmdir($root . '/config'); rmdir($root);
+});
+
+test('database recovery markers bind reset credentials to the original database', function (): void {
+    $first = sys_get_temp_dir() . '/scriptbox-db-first-' . bin2hex(random_bytes(4)) . '.sqlite';
+    $second = sys_get_temp_dir() . '/scriptbox-db-second-' . bin2hex(random_bytes(4)) . '.sqlite';
+    touch($first); touch($second);
+    $config = ['driver' => 'sqlite', 'path' => $first];
+    $database = DatabaseSession::connect($config);
+    $database->assertEmpty($config);
+    $marker = bin2hex(random_bytes(32)); $digest = hash('sha256', $marker);
+    $database->createRecoveryMarker($config, $marker);
+    expect($database->recoveryMarkerMatches($config, $digest));
+    expect(!DatabaseSession::connect(['driver' => 'sqlite', 'path' => $second])->recoveryMarkerMatches(['driver' => 'sqlite', 'path' => $second], $digest));
+    $database->resetToEmpty($config); $database->assertEmpty($config);
+    unlink($first); unlink($second);
+});
+
+test('journal recovery deletes only hash-bound files and completed directories', function (): void {
+    $root = sys_get_temp_dir() . '/scriptbox-journal-target-' . bin2hex(random_bytes(4)); mkdir($root, 0700);
+    $stateRoot = sys_get_temp_dir() . '/scriptbox-journal-state-' . bin2hex(random_bytes(4)); $state = new StateStore($stateRoot);
+    file_put_contents($root . '/owned.php', 'owned'); file_put_contents($root . '/changed.php', 'changed'); mkdir($root . '/intent-only');
+    $events = [
+        ['phase' => 'promote_intent', 'relative' => 'owned.php', 'directory' => false, 'bytes' => 5, 'sha256' => hash('sha256', 'owned')],
+        ['phase' => 'promote_intent', 'relative' => 'changed.php', 'directory' => false, 'bytes' => 8, 'sha256' => hash('sha256', 'original')],
+        ['phase' => 'promote_intent', 'relative' => 'intent-only', 'directory' => true],
+    ];
+    $engine = new InstallEngine(new ApiClient('https://example.invalid/installer/v1'), $state, $root, []);
+    $rollback = new ReflectionMethod($engine, 'rollbackJournal');
+    expect($rollback->invoke($engine, $events, $root) === false, 'unproven entries must keep recovery locked');
+    expect(!file_exists($root . '/owned.php'), 'matching installer file must be removed');
+    expect(is_file($root . '/changed.php'), 'changed file must never be removed');
+    expect(is_dir($root . '/intent-only'), 'intent-only directory must never be removed');
+    unlink($root . '/changed.php'); rmdir($root . '/intent-only'); rmdir($root); $state->removeAll();
 });
 
 $failures = 0;

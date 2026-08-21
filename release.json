@@ -1,7 +1,14 @@
 {
     "version": "1.0.0-dev",
     "protocol": "installer-v1",
-    "installer_sha256": "79d41f436521d976dd6b8914b91a5cb1efd4fa529b34d81fc5e1e8ae6cfcd2fb",
+    "installer_sha256": "da9556c28c089428633008024f6beb984045018c8a6301a9db28f8109110daad",
+    "launcher_sha256": "7fea3aaf568186fdb195c2a8447d74a11395b5ac28a5552ef99b4beb6b52fe52",
+    "bundle_files": [
+        "index.php",
+        "install.php",
+        "install.php.sha256",
+        "release.json"
+    ],
     "signing_key_ids": [
         "installer-root-2026-01"
     ],

@@ -5,8 +5,12 @@ namespace ScriptBox\Installer;
 
 if (!class_exists(Application::class)) require __DIR__ . '/Installer.php';
 $release = defined('SCRIPTBOX_COMPILED_RELEASE') ? SCRIPTBOX_COMPILED_RELEASE : require __DIR__ . '/../config/release.php';
-$target = dirname(realpath($_SERVER['SCRIPT_FILENAME'] ?? __FILE__) ?: __FILE__);
-$state = StateStore::discover($target, $_SERVER['SCRIPT_FILENAME'] ?? __FILE__);
+$installerFile = defined('SCRIPTBOX_INSTALLER_FILE') ? SCRIPTBOX_INSTALLER_FILE : (realpath($_SERVER['SCRIPT_FILENAME'] ?? __FILE__) ?: (__FILE__));
+$controlDirectory = dirname($installerFile);
+$controlPath = defined('SCRIPTBOX_LAUNCHER') ? $controlDirectory : $installerFile;
+$configuredDocumentRoot = PHP_SAPI === 'cli' ? false : realpath((string)($_SERVER['DOCUMENT_ROOT'] ?? ''));
+$target = is_string($configuredDocumentRoot) && is_dir($configuredDocumentRoot) ? $configuredDocumentRoot : $controlDirectory;
+$state = StateStore::discover($target, $installerFile);
 
 if (PHP_SAPI === 'cli') {
     $command = $argv[1] ?? 'help';
@@ -46,7 +50,12 @@ if (PHP_SAPI === 'cli') {
     exit(0);
 }
 
-if (strlen((string)($_SERVER['CONTENT_LENGTH'] ?? '0')) > 1024 * 1024) { http_response_code(413); exit; }
+try { RequestLimits::assertBodyLength((string)($_SERVER['CONTENT_LENGTH'] ?? '')); }
+catch (InstallerException $error) { http_response_code($error->getCode()); header('Content-Type: application/json'); echo json_encode(['success' => false, 'data' => null, 'error' => ['code' => $error->stableCode, 'message' => $error->getMessage()]]); exit; }
+$requestStream = fopen('php://input', 'rb');
+try { $requestBody = RequestLimits::readBody($requestStream); }
+catch (InstallerException $error) { http_response_code($error->getCode()); header('Content-Type: application/json'); echo json_encode(['success' => false, 'data' => null, 'error' => ['code' => $error->stableCode, 'message' => $error->getMessage()]]); exit; }
+finally { if (is_resource($requestStream)) fclose($requestStream); }
 $sessionDirectory = $state->root . '/sessions';
 if (!is_dir($sessionDirectory)) mkdir($sessionDirectory, 0700);
 ini_set('session.use_strict_mode', '1'); ini_set('session.use_only_cookies', '1'); ini_set('session.save_path', $sessionDirectory); ini_set('display_errors', '0');
@@ -58,8 +67,12 @@ $api = new ApiClient($release['api_base_url']);
 $assets = new AssetManager($api, $state, $release['public_keys']);
 $uri = $_SERVER['REQUEST_URI'] ?? '/';
 $path = parse_url($uri, PHP_URL_PATH) ?: '/';
-$scriptName = $_SERVER['SCRIPT_NAME'] ?? '/install.php';
-if (str_starts_with($path, $scriptName)) $path = substr($path, strlen($scriptName)) ?: '/';
+$launcher = defined('SCRIPTBOX_LAUNCHER');
+$scriptName = (string)($_SERVER['SCRIPT_NAME'] ?? ($launcher ? '/install/index.php' : '/install.php'));
+if ($scriptName === '') $scriptName = '/';
+if ($launcher && rtrim($path, '/') === rtrim(str_replace('\\', '/', dirname($scriptName)), '/')) $path = '/';
+elseif (str_starts_with($path, $scriptName)) $path = substr($path, strlen($scriptName)) ?: '/';
+$_SERVER['SCRIPT_NAME'] = $scriptName;
 $normalizedUri = $path . (($query = parse_url($uri, PHP_URL_QUERY)) ? '?' . $query : '');
 $headers = function_exists('getallheaders') ? getallheaders() : [];
-(new Application($api, $state, $assets, $target, $release['public_keys'], BuildIdentity::fromRelease($release, (string)($_SERVER['SCRIPT_FILENAME'] ?? __FILE__))))->handle($_SERVER['REQUEST_METHOD'] ?? 'GET', $normalizedUri, $headers, (string)file_get_contents('php://input'));
+(new Application($api, $state, $assets, $target, $release['public_keys'], BuildIdentity::fromRelease($release, $installerFile), $controlPath))->handle($_SERVER['REQUEST_METHOD'] ?? 'GET', $normalizedUri, $headers, $requestBody);
