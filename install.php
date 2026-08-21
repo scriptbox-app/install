@@ -330,6 +330,7 @@ final class ArchiveInspector
             if ($zip->numFiles > self::MAX_FILES) throw new InstallerException('Package contains too many files', 'PACKAGE_LIMIT');
             $unpacked = 0;
             $manifest = null;
+            $canonicalEntries = [];
             for ($index = 0; $index < $zip->numFiles; $index++) {
                 $stat = $zip->statIndex($index, \ZipArchive::FL_UNCHANGED);
                 $name = (string)($stat['name'] ?? '');
@@ -340,12 +341,32 @@ final class ArchiveInspector
                 if ($unpacked > self::MAX_UNPACKED || ($unpacked > 0 && $unpacked > max(1, filesize($archive)) * 100)) throw new InstallerException('Package expansion ratio is unsafe', 'PACKAGE_BOMB');
                 $attributes = $zip->getExternalAttributesIndex($index, $system, $external) ? (($external >> 16) & 0170000) : 0;
                 if ($attributes === 0120000 || $attributes === 0060000 || $attributes === 0020000) throw new InstallerException('Links and device files are forbidden', 'PACKAGE_ENTRY_INVALID');
+                $kind = str_ends_with($name, '/') || $attributes === 0040000 ? 'directory' : 'file';
+                self::recordCanonicalPath($canonicalEntries, $name, $kind);
                 if ($name === 'scriptbox.json') $manifest = json_decode((string)$zip->getFromIndex($index), true, 32, JSON_THROW_ON_ERROR);
             }
             if (!is_array($manifest)) throw new InstallerException('Package manifest is missing', 'MANIFEST_MISSING');
             self::validateManifest($manifest);
             return ['manifest' => $manifest, 'files' => $zip->numFiles, 'unpacked_bytes' => $unpacked];
         } finally { $zip->close(); }
+    }
+
+    private static function recordCanonicalPath(array &$entries, string $name, string $kind): void
+    {
+        $canonical = rtrim($name, '/');
+        if (isset($entries[$canonical])) throw new InstallerException('Package contains a duplicate or colliding archive path', 'PACKAGE_ENTRY_INVALID');
+        $parts = explode('/', $canonical);
+        for ($index = 1; $index < count($parts); $index++) {
+            if (($entries[implode('/', array_slice($parts, 0, $index))] ?? null) === 'file') {
+                throw new InstallerException('Package contains a file-directory archive collision', 'PACKAGE_ENTRY_INVALID');
+            }
+        }
+        if ($kind === 'file') {
+            foreach (array_keys($entries) as $existing) {
+                if (str_starts_with($existing, $canonical . '/')) throw new InstallerException('Package contains a file-directory archive collision', 'PACKAGE_ENTRY_INVALID');
+            }
+        }
+        $entries[$canonical] = $kind;
     }
 
     public static function validateManifest(array $manifest): void
@@ -1114,7 +1135,7 @@ final class MigrationValidator
     public static function assertSafeSql(string $sql): void
     {
         $executable = self::executableSql($sql);
-        if (preg_match('/\b(?:DROP|TRUNCATE|RENAME|USE|DEFINER|GRANT|REVOKE|CREATE\s+(?:USER|ROLE|PROCEDURE|FUNCTION|TRIGGER|EVENT)|LOAD\s+DATA|OUTFILE|INFILE|ATTACH|DETACH|PRAGMA|VACUUM|PREPARE|EXECUTE|DEALLOCATE|CALL|HANDLER|DELIMITER)\b/i', $executable)) {
+        if (preg_match('/\b(?:DROP|TRUNCATE|RENAME|USE|DEFINER|GRANT|REVOKE|CREATE\s+(?:USER|ROLE|PROCEDURE|FUNCTION|TRIGGER|EVENT)|LOAD\s+DATA|LOAD_FILE|OUTFILE|DUMPFILE|INFILE|PG_READ_FILE|PG_READ_BINARY_FILE|LO_IMPORT|OPENROWSET|ATTACH|DETACH|PRAGMA|VACUUM|PREPARE|EXECUTE|DEALLOCATE|CALL|HANDLER|DELIMITER)\b/i', $executable)) {
             throw new InstallerException('Migration SQL contains an unsafe executable clause', 'MIGRATION_INVALID');
         }
         if (preg_match('/^INSERT\s+INTO\b/i', $executable)
