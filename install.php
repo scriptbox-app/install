@@ -1061,6 +1061,52 @@ final class MigrationReader
     }
 }
 
+final class MigrationValidator
+{
+    public static function mongoCommand(array $command): array
+    {
+        $keys = array_keys($command); $name = $keys[0] ?? '';
+        $allowed = match ($name) {
+            'create' => ['create'],
+            'insert' => ['insert', 'documents', 'ordered'],
+            'createIndexes' => ['createIndexes', 'indexes'],
+            'collMod' => ['collMod', 'validator', 'validationLevel', 'validationAction'],
+            default => throw new InstallerException('MongoDB migration command is unsafe', 'MIGRATION_INVALID'),
+        };
+        if (array_diff($keys, $allowed) !== []) throw new InstallerException('MongoDB migration command contains an unknown field', 'MIGRATION_INVALID');
+        if (!is_string($command[$name] ?? null) || !preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/', $command[$name])) {
+            throw new InstallerException('MongoDB collection name is invalid', 'MIGRATION_INVALID');
+        }
+        if ($name === 'insert' && (!isset($command['documents']) || !is_array($command['documents']) || count($command['documents']) < 1 || count($command['documents']) > 1000)) {
+            throw new InstallerException('MongoDB insert documents are invalid', 'MIGRATION_INVALID');
+        }
+        if ($name === 'createIndexes' && (!isset($command['indexes']) || !is_array($command['indexes']) || count($command['indexes']) < 1 || count($command['indexes']) > 100)) {
+            throw new InstallerException('MongoDB indexes are invalid', 'MIGRATION_INVALID');
+        }
+        if ($name === 'collMod' && !array_key_exists('validator', $command)) throw new InstallerException('MongoDB collMod requires a validator', 'MIGRATION_INVALID');
+        self::mongoValue($command);
+        return $command;
+    }
+
+    private static function mongoValue(mixed $value, int $depth = 0): void
+    {
+        if ($depth > 32) throw new InstallerException('MongoDB migration value exceeds the nesting limit', 'MIGRATION_INVALID');
+        if ($value === null || is_string($value) || is_bool($value) || is_int($value)) return;
+        if (is_float($value)) {
+            if (!is_finite($value)) throw new InstallerException('MongoDB migration number is invalid', 'MIGRATION_INVALID');
+            return;
+        }
+        if (!is_array($value) || count($value) > 1000) throw new InstallerException('MongoDB migration value is invalid', 'MIGRATION_INVALID');
+        foreach ($value as $key => $nested) {
+            if (is_string($key) && ($key === '' || strlen($key) > 256 || preg_match('/[\x00-\x1f\x7f]/', $key)
+                || preg_match('/^(?:\$where|mapReduce|eval|function)$/i', $key))) {
+                throw new InstallerException('MongoDB migration field is unsafe', 'MIGRATION_INVALID');
+            }
+            self::mongoValue($nested, $depth + 1);
+        }
+    }
+}
+
 final class DatabaseSession
 {
     private const RECOVERY_OBJECT = '__scriptbox_install_recovery';
@@ -1131,9 +1177,8 @@ final class DatabaseSession
                 if (!is_array($operation) || ($operation['driver'] ?? null) !== $this->driver) throw new InstallerException('Migration driver does not match', 'MIGRATION_INVALID');
                 if ($this->driver === 'mongodb') {
                     $command = $operation['command'] ?? null;
-                    $allowed = ['create', 'insert', 'createIndexes', 'collMod'];
-                    if (!is_array($command) || count(array_intersect(array_keys($command), $allowed)) !== 1) throw new InstallerException('MongoDB operation is unsafe', 'MIGRATION_INVALID');
-                    $this->mongo->executeCommand((string)$config['name'], new \MongoDB\Driver\Command($command));
+                    if (!is_array($command)) throw new InstallerException('MongoDB operation is unsafe', 'MIGRATION_INVALID');
+                    $this->mongo->executeCommand((string)$config['name'], new \MongoDB\Driver\Command(MigrationValidator::mongoCommand($command)));
                 } else {
                     $sql = rtrim(trim((string)($operation['sql'] ?? '')), ';');
                     if ($sql === '' || str_contains($sql, "\0") || str_contains($sql, ';') || !preg_match('/^(CREATE\s+(?:TABLE|INDEX|VIEW)|ALTER\s+TABLE|INSERT\s+INTO|UPDATE\s+)/i', $sql)) throw new InstallerException('Migration operation is unsafe', 'MIGRATION_INVALID');
