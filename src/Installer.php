@@ -14,6 +14,19 @@ final class InstallerException extends RuntimeException
     }
 }
 
+final class BuildIdentity
+{
+    public static function fromRelease(array $release, string $artifactPath): array
+    {
+        $hash = is_file($artifactPath) ? hash_file('sha256', $artifactPath) : false;
+        return [
+            'installer_version' => (string)($release['version'] ?? ''),
+            'release_timestamp' => (string)($release['release_timestamp'] ?? ''),
+            'artifact_sha256' => is_string($hash) ? $hash : null,
+        ];
+    }
+}
+
 final class Crypto
 {
     public static function base64UrlEncode(string $value): string
@@ -366,6 +379,35 @@ final class Preflight
     }
 }
 
+final class MediaBuffer
+{
+    public const MAX_BYTES = 8 * 1024 * 1024;
+
+    public static function validatedSize($stream): int
+    {
+        $stat = fstat($stream);
+        $bytes = is_array($stat) ? ($stat['size'] ?? null) : null;
+        if (!is_int($bytes) || $bytes < 1 || $bytes > self::MAX_BYTES) {
+            throw new InstallerException('Catalog media size is invalid', 'MEDIA_SIZE_INVALID', 502);
+        }
+        return $bytes;
+    }
+}
+
+final class CatalogMedia
+{
+    private const TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif'];
+
+    public static function validate(bool $transportSucceeded, int $status, string $contentType, $stream): array
+    {
+        if (!$transportSucceeded) throw new InstallerException('Catalog media download failed', 'MEDIA_DOWNLOAD_FAILED', 502);
+        if ($status !== 200) throw new InstallerException('Catalog media upstream response is unavailable', 'MEDIA_UPSTREAM_STATUS', 502);
+        $type = trim(explode(';', strtolower($contentType))[0]);
+        if (!in_array($type, self::TYPES, true)) throw new InstallerException('Catalog media type is unsupported', 'MEDIA_TYPE_UNSUPPORTED', 502);
+        return ['content_type' => $type, 'bytes' => MediaBuffer::validatedSize($stream)];
+    }
+}
+
 final class ApiClient
 {
     private const METHODS = [
@@ -446,13 +488,13 @@ final class ApiClient
         if ($temporary === false) throw new InstallerException('Cannot create media buffer', 'MEDIA_UNAVAILABLE', 502);
         $handle = curl_init($this->baseUrl . $path);
         curl_setopt_array($handle, [CURLOPT_FILE => $temporary, CURLOPT_FOLLOWLOCATION => false, CURLOPT_CONNECTTIMEOUT => 8, CURLOPT_TIMEOUT => 20, CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2, CURLOPT_PROTOCOLS => CURLPROTO_HTTPS]);
-        $ok = curl_exec($handle); $status = curl_getinfo($handle, CURLINFO_RESPONSE_CODE); $type = strtolower((string)curl_getinfo($handle, CURLINFO_CONTENT_TYPE)); $error = curl_error($handle); curl_close($handle);
-        $bytes = ftell($temporary);
-        $type = trim(explode(';', $type)[0]);
-        if ($ok === false || $status !== 200 || $bytes < 1 || $bytes > 8 * 1024 * 1024 || !in_array($type, ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif'], true)) {
-            fclose($temporary); throw new InstallerException('Catalog media is unavailable: ' . $error, 'MEDIA_UNAVAILABLE', 502);
+        $ok = curl_exec($handle); $status = curl_getinfo($handle, CURLINFO_RESPONSE_CODE); $type = (string)curl_getinfo($handle, CURLINFO_CONTENT_TYPE); curl_close($handle);
+        try {
+            $media = CatalogMedia::validate($ok === true, $status, $type, $temporary);
+            header('Content-Type: ' . $media['content_type']); header('Content-Length: ' . $media['bytes']); header('Cache-Control: private, max-age=3600'); rewind($temporary); fpassthru($temporary);
+        } finally {
+            fclose($temporary);
         }
-        header('Content-Type: ' . $type); header('Content-Length: ' . $bytes); header('Cache-Control: private, max-age=3600'); rewind($temporary); fpassthru($temporary); fclose($temporary);
     }
 
     private function assertAllowed(string $method, string $path): void
@@ -917,6 +959,7 @@ final class Application
         private readonly AssetManager $assets,
         private readonly string $target,
         private readonly array $publicKeys,
+        private readonly array $buildIdentity = [],
     ) {}
 
     public function handle(string $method, string $uri, array $headers, string $rawBody): void
@@ -952,7 +995,8 @@ final class Application
         } catch (Throwable $error) {
             $diagnostic = $this->recordDiagnostic($error);
             $status = $error instanceof InstallerException ? max(400, min(599, $error->getCode())) : 500;
-            $message = $status >= 500 ? 'Installer operation failed' : $error->getMessage();
+            $message = $status >= 500 && !($error instanceof InstallerException && str_starts_with($error->stableCode, 'MEDIA_'))
+                ? 'Installer operation failed' : $error->getMessage();
             $this->json(['success' => false, 'data' => null, 'error' => ['code' => $diagnostic['code'], 'message' => $message, 'diagnostic_id' => $diagnostic['diagnostic_id']]], $status);
         }
     }
@@ -963,6 +1007,7 @@ final class Application
         catch (Throwable) { $origin = ['origin' => null, 'source' => null]; }
         return ['csrf_token' => $_SESSION['csrf'], 'capabilities' => Preflight::capabilities($this->target), 'status' => $this->state->read('status', ['state' => 'idle']), 'paid_checkout' => false,
             'detected_origin' => $origin['origin'], 'origin_source' => $origin['source'], 'can_verify_origin' => $origin['origin'] !== null,
+            'build' => $this->buildIdentity,
             'ui_assets' => $this->assets->runtimeAssets((string)($_SERVER['SCRIPT_NAME'] ?? '/install.php'))];
     }
 

@@ -13,6 +13,9 @@ use ScriptBox\Installer\ConfigurationWriter;
 use ScriptBox\Installer\ApiClient;
 use ScriptBox\Installer\Application;
 use ScriptBox\Installer\AssetManager;
+use ScriptBox\Installer\BuildIdentity;
+use ScriptBox\Installer\CatalogMedia;
+use ScriptBox\Installer\MediaBuffer;
 use ScriptBox\Installer\OwnershipProof;
 use ScriptBox\Installer\OriginDetector;
 
@@ -25,6 +28,15 @@ function expectThrows(callable $callback, string $contains): void {
         return;
     }
     throw new RuntimeException('Expected exception was not thrown');
+}
+function expectInstallerFailure(callable $callback, string $code, int $status): void {
+    try { $callback(); }
+    catch (InstallerException $error) {
+        expect($error->stableCode === $code, 'Expected ' . $code . ', got ' . $error->stableCode);
+        expect($error->getCode() === $status, 'Expected HTTP ' . $status . ', got ' . $error->getCode());
+        return;
+    }
+    throw new RuntimeException('Expected installer exception was not thrown');
 }
 
 test('signed bootstrap verifies RS256, key id, and expiry', function (): void {
@@ -47,7 +59,9 @@ test('committed installer checksum and release metadata match the compiled artif
     $metadata = json_decode((string)file_get_contents($root . '/release.json'), true, 32, JSON_THROW_ON_ERROR);
     expect(($checksumParts[0] ?? '') === $actualHash, 'install.php.sha256 is stale');
     expect(($metadata['installer_sha256'] ?? '') === $actualHash, 'release.json installer hash is stale');
-    expect(($metadata['signing_key_ids'] ?? []) === array_keys((require $root . '/config/release.php')['public_keys']), 'release signing key ids are stale');
+    $release = require $root . '/config/release.php';
+    expect(($metadata['signing_key_ids'] ?? []) === array_keys($release['public_keys']), 'release signing key ids are stale');
+    expect(($metadata['release_timestamp'] ?? '') === $release['release_timestamp'], 'release.json timestamp is stale');
 });
 
 test('installer shell reports and records a safe bootstrap diagnostic', function (): void {
@@ -134,6 +148,82 @@ test('API allowlist accepts the fixed catalog media query route', function (): v
     $assertAllowed = new ReflectionMethod($client, 'assertAllowed');
     $assertAllowed->invoke($client, 'GET', '/catalog/media?token=header.payload.signature');
     expectThrows(fn () => $assertAllowed->invoke($client, 'GET', '/admin?token=header.payload.signature'), 'allowlisted');
+});
+
+test('media validation measures buffered bytes when the stream cursor is zero', function (): void {
+    $temporary = tmpfile();
+    expect($temporary !== false, 'Cannot create temporary media stream');
+    fwrite($temporary, 'catalog-image-bytes');
+    rewind($temporary);
+    expect(ftell($temporary) === 0, 'Regression setup requires a zero cursor');
+    expect(MediaBuffer::validatedSize($temporary) === 19, 'Media validation must use the buffered stream size, not its cursor');
+    fclose($temporary);
+});
+
+test('catalog media validation accepts a supported type after normalizing its parameters', function (): void {
+    $temporary = tmpfile();
+    expect($temporary !== false, 'Cannot create temporary media stream');
+    fwrite($temporary, 'catalog-image-bytes');
+    expect(CatalogMedia::validate(true, 200, 'image/png; charset=binary', $temporary) === ['content_type' => 'image/png', 'bytes' => 19]);
+    fclose($temporary);
+});
+
+test('catalog media validation reports a transport failure without cURL details', function (): void {
+    $temporary = tmpfile();
+    expect($temporary !== false, 'Cannot create temporary media stream');
+    expectInstallerFailure(fn () => CatalogMedia::validate(false, 0, '', $temporary), 'MEDIA_DOWNLOAD_FAILED', 502);
+    fclose($temporary);
+});
+
+test('catalog media validation reports a non-200 upstream response', function (): void {
+    $temporary = tmpfile();
+    expect($temporary !== false, 'Cannot create temporary media stream');
+    expectInstallerFailure(fn () => CatalogMedia::validate(true, 503, 'image/png', $temporary), 'MEDIA_UPSTREAM_STATUS', 502);
+    fclose($temporary);
+});
+
+test('catalog media validation reports an unsupported content type', function (): void {
+    $temporary = tmpfile();
+    expect($temporary !== false, 'Cannot create temporary media stream');
+    fwrite($temporary, 'catalog-image-bytes');
+    expectInstallerFailure(fn () => CatalogMedia::validate(true, 200, 'text/html', $temporary), 'MEDIA_TYPE_UNSUPPORTED', 502);
+    fclose($temporary);
+});
+
+test('catalog media validation reports an empty media buffer', function (): void {
+    $temporary = tmpfile();
+    expect($temporary !== false, 'Cannot create temporary media stream');
+    expectInstallerFailure(fn () => CatalogMedia::validate(true, 200, 'image/png', $temporary), 'MEDIA_SIZE_INVALID', 502);
+    fclose($temporary);
+});
+
+test('catalog media validation reports an oversized media buffer', function (): void {
+    $temporary = tmpfile();
+    expect($temporary !== false, 'Cannot create temporary media stream');
+    ftruncate($temporary, 8 * 1024 * 1024 + 1);
+    expectInstallerFailure(fn () => CatalogMedia::validate(true, 200, 'image/png', $temporary), 'MEDIA_SIZE_INVALID', 502);
+    fclose($temporary);
+});
+
+test('catalog media rejects an invalid local token with a 404', function (): void {
+    $client = new ApiClient('https://example.invalid/installer/v1');
+    expectInstallerFailure(fn () => $client->streamCatalogMedia('invalid token'), 'MEDIA_NOT_FOUND', 404);
+});
+
+test('runtime build identity uses the configured release timestamp and running artifact hash', function (): void {
+    $artifact = tempnam(sys_get_temp_dir(), 'scriptbox-artifact-');
+    expect($artifact !== false, 'Cannot create runtime identity fixture');
+    file_put_contents($artifact, 'installer-artifact');
+    $identity = BuildIdentity::fromRelease([
+        'version' => 'test-1.2.3',
+        'release_timestamp' => '2026-08-21T00:00:00+00:00',
+    ], $artifact);
+    expect($identity === [
+        'installer_version' => 'test-1.2.3',
+        'release_timestamp' => '2026-08-21T00:00:00+00:00',
+        'artifact_sha256' => 'd65ac6977a444a0db947102d2d45658a2183db86084675a69eeffafbb1f7519a',
+    ], 'Runtime identity must be release-pinned and hash the served artifact');
+    unlink($artifact);
 });
 
 test('origin detection uses direct HTTPS without trusting browser input', function (): void {

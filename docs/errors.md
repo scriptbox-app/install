@@ -14,6 +14,11 @@ Stable codes identify the failed boundary without exposing raw exceptions. Use t
 | `ASSET_METADATA_INVALID` | Signed UI metadata is malformed or outside limits | Stop and report the diagnostic |
 | `ASSET_DOWNLOAD_FAILED` | UI transfer failed | Check reported HTTP/cURL status, outbound HTTPS, and proxy behavior |
 | `ASSET_NOT_FOUND` | Verified cached UI asset is absent | Reload to refresh bootstrap; replace damaged private state only with support guidance |
+| `MEDIA_NOT_FOUND` | Local catalog-media token is malformed or unavailable | Reload the catalog; do not reuse or share the token |
+| `MEDIA_DOWNLOAD_FAILED` | Catalog-media HTTPS download did not complete | Confirm outbound HTTPS and retry; retain the diagnostic ID |
+| `MEDIA_UPSTREAM_STATUS` | Catalog-media service did not return a successful response | Retry later; retain the diagnostic ID without sharing the media URL |
+| `MEDIA_TYPE_UNSUPPORTED` | Catalog-media service returned a non-image or unsupported image type | Report the stable code and diagnostic ID; do not download it directly |
+| `MEDIA_SIZE_INVALID` | Catalog-media response was empty or outside the 1 byte–8 MiB limit | Retry once; report the stable code if it persists |
 | `HASH_MISMATCH` | Downloaded bytes differ from signed size/hash | Stop; never edit hashes or use the file |
 | `TARGET_NOT_WRITABLE` | PHP-FPM cannot write the installation directory | Correct owner/group and restrictive permissions; never use `0777` |
 | `TARGET_NOT_EMPTY` | Existing files were found | Use a new empty directory |

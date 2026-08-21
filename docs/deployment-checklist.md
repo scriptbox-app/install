@@ -13,10 +13,12 @@ This public checklist is for the hosting administrator deploying `install.php`. 
 - [ ] Confirm outbound HTTPS to `api.scriptbox.app` is allowed.
 - [ ] Download `install.php` and its checksum from the same approved release.
 - [ ] Compare `sha256sum install.php` with the published value.
+- [ ] Record that SHA-256 fingerprint for the post-upload runtime check.
 
 ## After upload
 
 - [ ] Open the installer only through HTTPS.
+- [ ] Request `install.php/api/runtime` and confirm `data.build.artifact_sha256` matches the recorded release fingerprint and `data.build.release_timestamp` is the expected release value.
 - [ ] Confirm the runtime panel reports supported PHP, required extensions, and `target: writable`.
 - [ ] Confirm the read-only detected origin matches the deployed HTTPS domain; no browser domain input is required.
 - [ ] Read the privacy notice before consenting.
@@ -39,6 +41,8 @@ This public checklist is for the hosting administrator deploying `install.php`. 
 3. Read [errors.md](errors.md) before changing permissions, files, database state, or network rules.
 4. Allow automatic rollback to finish.
 5. Do not manually delete journaled files or retry if the state is `recovery_required`.
+
+For a catalog image problem, retain only the `MEDIA_*` code and diagnostic ID. `MEDIA_NOT_FOUND` means the local token is not usable; `MEDIA_DOWNLOAD_FAILED` and `MEDIA_UPSTREAM_STATUS` indicate a remote retrieval problem; `MEDIA_TYPE_UNSUPPORTED` and `MEDIA_SIZE_INVALID` mean the installer safely rejected the response. Never share a media token, response body, or URL.
 
 ## Recovery
 

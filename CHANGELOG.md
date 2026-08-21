@@ -7,6 +7,8 @@ All notable public installer changes are recorded here. Dates use UTC and versio
 - Added private-state ownership proofs that support both `/install.php` and subdirectory `/install/install.php` deployments.
 - Added `TARGET_NOT_WRITABLE`, safe browser diagnostics, CLI last-error output, and actionable asset-download transport details.
 - Added API storage-size validation so broken UI releases are rejected before incomplete files are streamed.
+- Fixed catalog-media validation to measure buffered bytes rather than stream position, with safe `MEDIA_*` diagnostics for token, transport, status, type, and size failures.
+- Added runtime installer version, immutable release timestamp, and the running artifact SHA-256 fingerprint for post-upload verification.
 - Added UI capability gating for unsupported PHP, missing extensions, and non-writable targets.
 - Expanded all public user, security, privacy, package, recovery, protocol, contributor, and release documentation.
 

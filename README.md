@@ -107,6 +107,8 @@ curl --fail --silent https://example.com/install/install.php/api/runtime
 
 `capabilities.filesystem.target_writable` must be `true`.
 
+The same response includes `build.installer_version`, the immutable `build.release_timestamp`, and `build.artifact_sha256`. Compare `build.artifact_sha256` with the SHA-256 fingerprint of the exact `install.php` uploaded to the server. A mismatch means the deployed artifact is not the reviewed release; stop and replace it rather than editing the file in place.
+
 ## VPS and CLI usage
 
 Run CLI commands with the same PHP version and extensions as the web pool:
@@ -151,6 +153,8 @@ php install.php recover
 Do not delete the journal, private state, or partially installed files manually before recording the diagnostic. Follow the [error catalog](docs/errors.md) and [deployment and recovery checklist](docs/deployment-checklist.md).
 
 If the React UI cannot start, the server-rendered page shows a stable error code, safe message, and diagnostic ID. The same sanitized record is available through the CLI status command and PHP server log.
+
+Catalog preview images are fetched only through the local `install.php/api/media?token=...` route. If a preview image fails, use the reported `MEDIA_*` code to distinguish a malformed token, download failure, upstream response, content type, or size validation problem. Do not paste media tokens into support tickets or try an upstream media URL directly.
 
 ## Privacy summary
 

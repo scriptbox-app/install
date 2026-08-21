@@ -62,4 +62,4 @@ $scriptName = $_SERVER['SCRIPT_NAME'] ?? '/install.php';
 if (str_starts_with($path, $scriptName)) $path = substr($path, strlen($scriptName)) ?: '/';
 $normalizedUri = $path . (($query = parse_url($uri, PHP_URL_QUERY)) ? '?' . $query : '');
 $headers = function_exists('getallheaders') ? getallheaders() : [];
-(new Application($api, $state, $assets, $target, $release['public_keys']))->handle($_SERVER['REQUEST_METHOD'] ?? 'GET', $normalizedUri, $headers, (string)file_get_contents('php://input'));
+(new Application($api, $state, $assets, $target, $release['public_keys'], BuildIdentity::fromRelease($release, (string)($_SERVER['SCRIPT_FILENAME'] ?? __FILE__))))->handle($_SERVER['REQUEST_METHOD'] ?? 'GET', $normalizedUri, $headers, (string)file_get_contents('php://input'));
