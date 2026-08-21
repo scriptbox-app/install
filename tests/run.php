@@ -339,6 +339,19 @@ test('migration placeholder counting ignores quoted literals and SQL comments', 
     expect(MigrationValidator::placeholderCount('UPDATE `?table` SET body="?" WHERE id=?') === 1);
 });
 
+test('migration SQL validation rejects executable INSERT clauses but ignores quoted data', function (): void {
+    expectInstallerFailure(
+        fn() => MigrationValidator::assertSafeSql('INSERT INTO copied (id) SELECT id FROM private_rows'),
+        'MIGRATION_INVALID', 400
+    );
+    expectInstallerFailure(
+        fn() => MigrationValidator::assertSafeSql('INSERT INTO audit (message) VALUES (?) INTO OUTFILE ?'),
+        'MIGRATION_INVALID', 400
+    );
+    MigrationValidator::assertSafeSql("INSERT INTO audit (message) VALUES ('DROP DEFINER OUTFILE is customer data')");
+    MigrationValidator::assertSafeSql('INSERT INTO audit (message) VALUES (?)');
+});
+
 test('migration reader is restartable and keeps large JSONL imports below 64 MiB', function (): void {
     $directory = sys_get_temp_dir() . '/scriptbox-large-migration-' . bin2hex(random_bytes(4)); mkdir($directory, 0700);
     $jsonl = $directory . '/001.jsonl'; $output = fopen($jsonl, 'wb');

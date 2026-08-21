@@ -1111,6 +1111,60 @@ final class MigrationValidator
         return $count;
     }
 
+    public static function assertSafeSql(string $sql): void
+    {
+        $executable = self::executableSql($sql);
+        if (preg_match('/\b(?:DROP|TRUNCATE|RENAME|USE|DEFINER|GRANT|REVOKE|CREATE\s+(?:USER|ROLE|PROCEDURE|FUNCTION|TRIGGER|EVENT)|LOAD\s+DATA|OUTFILE|INFILE|ATTACH|DETACH|PRAGMA|VACUUM|PREPARE|EXECUTE|DEALLOCATE|CALL|HANDLER|DELIMITER)\b/i', $executable)) {
+            throw new InstallerException('Migration SQL contains an unsafe executable clause', 'MIGRATION_INVALID');
+        }
+        if (preg_match('/^INSERT\s+INTO\b/i', $executable)
+            && (!preg_match('/\bVALUES\s*\(/i', $executable) || preg_match('/\bSELECT\b/i', $executable))) {
+            throw new InstallerException('Migration INSERT SQL must use prepared literal VALUES', 'MIGRATION_INVALID');
+        }
+    }
+
+    private static function executableSql(string $sql): string
+    {
+        $result = ''; $quote = null; $lineComment = false; $blockComment = false; $length = strlen($sql);
+        for ($index = 0; $index < $length; $index++) {
+            $character = $sql[$index]; $next = $index + 1 < $length ? $sql[$index + 1] : '';
+            if ($lineComment) {
+                if ($character === "\n" || $character === "\r") { $lineComment = false; $result .= $character; }
+                else $result .= ' ';
+                continue;
+            }
+            if ($blockComment) {
+                if ($character === '*' && $next === '/') { $result .= '  '; $blockComment = false; $index++; }
+                else $result .= ' ';
+                continue;
+            }
+            if ($quote !== null) {
+                $result .= ' ';
+                if ($quote === ']' && $character === ']') {
+                    if ($next === ']') { $result .= ' '; $index++; }
+                    else $quote = null;
+                    continue;
+                }
+                if ($character === '\\' && $quote !== '`' && $index + 1 < $length) { $result .= ' '; $index++; continue; }
+                if ($character === $quote) {
+                    if ($next === $quote) { $result .= ' '; $index++; }
+                    else $quote = null;
+                }
+                continue;
+            }
+            if (($character === '-' && $next === '-') || $character === '#') {
+                $lineComment = true; $result .= $character === '-' ? '  ' : ' ';
+                if ($character === '-') $index++;
+                continue;
+            }
+            if ($character === '/' && $next === '*') { $blockComment = true; $result .= '  '; $index++; continue; }
+            if (in_array($character, ["'", '"', '`'], true)) { $quote = $character; $result .= ' '; continue; }
+            if ($character === '[') { $quote = ']'; $result .= ' '; continue; }
+            $result .= $character;
+        }
+        return $result;
+    }
+
     public static function mongoCommand(array $command): array
     {
         $keys = array_keys($command); $name = $keys[0] ?? '';
@@ -1224,6 +1278,7 @@ final class DatabaseSession
                 } else {
                     $sql = rtrim(trim((string)($operation['sql'] ?? '')), ';');
                     if ($sql === '' || str_contains($sql, "\0") || str_contains($sql, ';') || !preg_match('/^(CREATE\s+(?:TABLE|INDEX|VIEW)|ALTER\s+TABLE|INSERT\s+INTO|UPDATE\s+)/i', $sql)) throw new InstallerException('Migration operation is unsafe', 'MIGRATION_INVALID');
+                    MigrationValidator::assertSafeSql($sql);
                     $parameters = $operation['parameters'] ?? [];
                     if (!is_array($parameters) || count($parameters) > 1000) throw new InstallerException('Migration parameters are invalid', 'MIGRATION_INVALID');
                     if (MigrationValidator::placeholderCount($sql) !== count($parameters)) throw new InstallerException('Migration parameter count does not match', 'MIGRATION_INVALID');
