@@ -1115,10 +1115,17 @@ final class MigrationValidator
 
     private static function executableSql(string $sql, string $driver): string
     {
-        $result = ''; $quote = null; $lineComment = false; $blockComment = false; $executableComment = false; $length = strlen($sql);
+        $result = ''; $quote = null; $lineComment = false; $blockComment = false; $executableComment = false; $dollarQuote = null; $length = strlen($sql);
         $mysqlDialect = in_array($driver, ['mysql', 'mariadb'], true);
         for ($index = 0; $index < $length; $index++) {
             $character = $sql[$index]; $next = $index + 1 < $length ? $sql[$index + 1] : '';
+            if ($dollarQuote !== null) {
+                $delimiterLength = strlen($dollarQuote);
+                if (substr_compare($sql, $dollarQuote, $index, $delimiterLength) === 0) {
+                    $result .= str_repeat(' ', $delimiterLength); $index += $delimiterLength - 1; $dollarQuote = null;
+                } else $result .= ' ';
+                continue;
+            }
             if ($lineComment) {
                 if ($character === "\n" || $character === "\r") { $lineComment = false; $result .= $character; }
                 else $result .= ' ';
@@ -1146,6 +1153,16 @@ final class MigrationValidator
             if ($executableComment && $character === '*' && $next === '/') {
                 $result .= '  '; $executableComment = false; $index++; continue;
             }
+            $previous = $index > 0 ? $sql[$index - 1] : '';
+            if ($driver === 'pgsql' && $character === '$' && !preg_match('/[A-Za-z0-9_$]/', $previous)) {
+                $delimiterEnd = strpos($sql, '$', $index + 1);
+                if ($delimiterEnd !== false) {
+                    $tag = substr($sql, $index + 1, $delimiterEnd - $index - 1);
+                    if ($tag === '' || preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $tag)) {
+                        $dollarQuote = '$' . $tag . '$'; $result .= str_repeat(' ', strlen($dollarQuote)); $index = $delimiterEnd; continue;
+                    }
+                }
+            }
             $third = $index + 2 < $length ? $sql[$index + 2] : '';
             $dashComment = $character === '-' && $next === '-'
                 && (!$mysqlDialect || $third === '' || preg_match('/[\s\x00-\x1f\x7f]/', $third));
@@ -1169,6 +1186,7 @@ final class MigrationValidator
             if ($driver === 'sqlsrv' && $character === '[') { $quote = ']'; $result .= ' '; continue; }
             $result .= $character;
         }
+        if ($dollarQuote !== null) throw new InstallerException('Migration SQL contains an unterminated PostgreSQL dollar-quoted string', 'MIGRATION_INVALID');
         return $result;
     }
 

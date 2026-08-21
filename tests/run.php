@@ -409,6 +409,10 @@ test('migration placeholder counting follows database-specific SQL syntax', func
     expect(MigrationValidator::placeholderCount('UPDATE t SET value=? /*!80000 + ? */', 'mysql') === 2, 'MySQL executable comments must stay executable');
     expect(MigrationValidator::placeholderCount('UPDATE t SET value=(ARRAY[?])[?]', 'pgsql') === 2, 'PostgreSQL array brackets must stay executable');
     expect(MigrationValidator::placeholderCount('UPDATE [question?table] SET value=?', 'sqlsrv') === 1, 'SQL Server bracket identifiers must stay quoted');
+    expect(MigrationValidator::placeholderCount('UPDATE t SET value=$$?$$ WHERE id=?', 'pgsql') === 1, 'PostgreSQL untagged dollar strings must hide placeholders');
+    expect(MigrationValidator::placeholderCount('UPDATE t SET value=$safe$?$safe$ WHERE id=?', 'pgsql') === 1, 'PostgreSQL tagged dollar strings must hide placeholders');
+    expect(MigrationValidator::placeholderCount('UPDATE t SET value=$$?$$', 'mysql') === 1, 'MySQL must not treat PostgreSQL dollar syntax as a string');
+    expectInstallerFailure(fn() => MigrationValidator::placeholderCount('UPDATE t SET value=$broken$?', 'pgsql'), 'MIGRATION_INVALID', 400);
 });
 
 test('migration SQL validation rejects executable INSERT clauses but ignores quoted data', function (): void {
@@ -476,6 +480,25 @@ test('migration SQL cannot hide file access behind another database comment dial
     MigrationValidator::assertSafeSql("UPDATE t SET value=0 -- LOAD_FILE('/etc/passwd')", 'mysql');
     MigrationValidator::assertSafeSql("UPDATE t SET value=0 /* pg_read_file('/etc/passwd') */", 'pgsql');
     MigrationValidator::assertSafeSql('UPDATE [PG_READ_FILE(?)] SET value=?', 'sqlsrv');
+});
+
+test('PostgreSQL dollar-quoted strings cannot hide later executable file access', function (): void {
+    foreach ([
+        'UPDATE t SET value=$$-- inert text$$ || pg_read_file(\'/etc/passwd\')',
+        'UPDATE t SET value=$safe$/* inert text */$safe$ || pg_stat_file(\'/etc/passwd\')',
+    ] as $sql) {
+        expectInstallerFailure(fn() => MigrationValidator::assertSafeSql($sql, 'pgsql'), 'MIGRATION_INVALID', 400);
+    }
+    MigrationValidator::assertSafeSql('UPDATE t SET value=$$pg_read_file(\'/etc/passwd\') -- LOAD_EXTENSION(?)$$', 'pgsql');
+    MigrationValidator::assertSafeSql('UPDATE t SET value=$safe$pg_stat_file(?)$safe$', 'pgsql');
+    expectInstallerFailure(
+        fn() => MigrationValidator::assertSafeSql('UPDATE t SET value=$broken$pg_read_file(?)', 'pgsql'),
+        'MIGRATION_INVALID', 400,
+    );
+    expectInstallerFailure(
+        fn() => MigrationValidator::assertSafeSql('UPDATE t SET value=$$LOAD_FILE(\'/etc/passwd\')$$', 'mysql'),
+        'MIGRATION_INVALID', 400,
+    );
 });
 
 test('migration reader is restartable and keeps large JSONL imports below 64 MiB', function (): void {
