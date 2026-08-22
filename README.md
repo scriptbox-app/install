@@ -161,8 +161,11 @@ Normal failures trigger automatic cleanup of files and database objects created 
 
 ```bash
 php install.php status
+php install.php clear-cache
 php install.php recover
 ```
+
+Use `clear-cache` after publishing a new immutable installer UI release when the deployed installer still has an older signed bootstrap cached. It removes only `bootstrap.json` and hash-named signed UI assets from private state. It never removes browser sessions, cookies, installation status, locks, rollback journals, or resumable run state. The next browser request downloads and verifies the currently active signed UI release.
 
 Do not delete the journal, private state, or partially installed files manually before recording the diagnostic. If migration was interrupted, reopen the wizard and enter the original database connection. A random pre-migration marker binds destructive reset to that exact database; a different same-driver database is rejected. Credentials remain request-only. Follow the [error catalog](docs/errors.md) and [deployment and recovery checklist](docs/deployment-checklist.md).
 

@@ -222,6 +222,20 @@ final class StateStore
         if (is_file($file) && !unlink($file)) throw new InstallerException('Unable to remove installer state', 'STATE_WRITE_FAILED', 500);
     }
 
+    public function clearUiCache(): array
+    {
+        $removed = [];
+        foreach (scandir($this->root) ?: [] as $entry) {
+            if ($entry !== 'bootstrap.json' && !preg_match('/^asset-[a-f0-9]{64}\.(?:js|css|json|png)$/', $entry)) continue;
+            $file = $this->root . DIRECTORY_SEPARATOR . $entry;
+            if (!is_file($file)) continue;
+            if (!unlink($file)) throw new InstallerException('Unable to clear signed UI cache', 'STATE_WRITE_FAILED', 500);
+            $removed[] = $entry;
+        }
+        sort($removed, SORT_STRING);
+        return ['removed' => count($removed), 'files' => $removed];
+    }
+
     public function removeAll(): void
     {
         if (!is_dir($this->root) || is_link($this->root)) return;
@@ -2255,6 +2269,12 @@ $state = StateStore::discover($target, $installerFile);
 
 if (PHP_SAPI === 'cli') {
     $command = $argv[1] ?? 'help';
+    if ($command === 'clear-cache') {
+        $result = $state->clearUiCache();
+        fwrite(STDOUT, "Cleared bootstrap and signed UI asset cache. Removed {$result['removed']} file(s).\n");
+        fwrite(STDOUT, "The next browser request will download and verify the active signed UI release.\n");
+        exit(0);
+    }
     if ($command === 'init') {
         $state->write('status', ['state' => 'initialized', 'phase' => 'ready', 'install_id' => bin2hex(random_bytes(16))]);
         fwrite(STDOUT, "ScriptBox installer initialized. State: {$state->root}\n");
@@ -2287,7 +2307,7 @@ if (PHP_SAPI === 'cli') {
         passthru(escapeshellarg(PHP_BINARY) . ' -S ' . escapeshellarg($listen) . ' ' . escapeshellarg($_SERVER['SCRIPT_FILENAME']), $exitCode);
         exit($exitCode);
     }
-    fwrite(STDOUT, "ScriptBox Installer {$release['version']}\nCommands: init, status, serve, recover\n");
+    fwrite(STDOUT, "ScriptBox Installer {$release['version']}\nCommands: init, status, clear-cache, serve, recover\n");
     exit(0);
 }
 

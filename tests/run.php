@@ -143,6 +143,36 @@ test('asset download diagnostics expose safe HTTP and transport status', functio
     );
 });
 
+test('UI cache clearing removes only signed bootstrap and asset cache files', function (): void {
+    $root = sys_get_temp_dir() . '/scriptbox-ui-cache-' . bin2hex(random_bytes(4));
+    $state = new StateStore($root);
+    $hash = str_repeat('a', 64);
+    mkdir($root . '/sessions', 0700);
+    file_put_contents($root . '/bootstrap.json', "{}\n");
+    file_put_contents($root . '/asset-' . $hash . '.js', 'javascript');
+    file_put_contents($root . '/asset-' . $hash . '.png', 'png');
+    file_put_contents($root . '/status.json', "{}\n");
+    file_put_contents($root . '/journal.jsonl', "{}\n");
+    file_put_contents($root . '/sessions/sess_keep', 'session');
+    file_put_contents($root . '/asset-not-a-signed-hash.js', 'unknown');
+    try {
+        $result = $state->clearUiCache();
+        expect(($result['removed'] ?? null) === 3, 'clear-cache did not report the exact removed file count');
+        expect(!is_file($root . '/bootstrap.json'), 'clear-cache retained bootstrap.json');
+        expect(!is_file($root . '/asset-' . $hash . '.js'), 'clear-cache retained a signed JavaScript cache file');
+        expect(!is_file($root . '/asset-' . $hash . '.png'), 'clear-cache retained a signed PNG cache file');
+        expect(is_file($root . '/status.json'), 'clear-cache removed installation status');
+        expect(is_file($root . '/journal.jsonl'), 'clear-cache removed the rollback journal');
+        expect(is_file($root . '/sessions/sess_keep'), 'clear-cache removed an installer session');
+        expect(is_file($root . '/asset-not-a-signed-hash.js'), 'clear-cache removed an unrecognized file');
+    } finally {
+        foreach (scandir($root . '/sessions') ?: [] as $entry) if ($entry !== '.' && $entry !== '..') @unlink($root . '/sessions/' . $entry);
+        @rmdir($root . '/sessions');
+        foreach (scandir($root) ?: [] as $entry) if ($entry !== '.' && $entry !== '..') @unlink($root . '/' . $entry);
+        @rmdir($root);
+    }
+});
+
 test('state is private, atomic, and redacts secrets', function (): void {
     $root = sys_get_temp_dir() . '/scriptbox-test-' . bin2hex(random_bytes(4));
     $store = new StateStore($root);

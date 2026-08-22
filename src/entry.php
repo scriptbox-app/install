@@ -15,6 +15,12 @@ $state = StateStore::discover($target, $installerFile);
 
 if (PHP_SAPI === 'cli') {
     $command = $argv[1] ?? 'help';
+    if ($command === 'clear-cache') {
+        $result = $state->clearUiCache();
+        fwrite(STDOUT, "Cleared bootstrap and signed UI asset cache. Removed {$result['removed']} file(s).\n");
+        fwrite(STDOUT, "The next browser request will download and verify the active signed UI release.\n");
+        exit(0);
+    }
     if ($command === 'init') {
         $state->write('status', ['state' => 'initialized', 'phase' => 'ready', 'install_id' => bin2hex(random_bytes(16))]);
         fwrite(STDOUT, "ScriptBox installer initialized. State: {$state->root}\n");
@@ -47,7 +53,7 @@ if (PHP_SAPI === 'cli') {
         passthru(escapeshellarg(PHP_BINARY) . ' -S ' . escapeshellarg($listen) . ' ' . escapeshellarg($_SERVER['SCRIPT_FILENAME']), $exitCode);
         exit($exitCode);
     }
-    fwrite(STDOUT, "ScriptBox Installer {$release['version']}\nCommands: init, status, serve, recover\n");
+    fwrite(STDOUT, "ScriptBox Installer {$release['version']}\nCommands: init, status, clear-cache, serve, recover\n");
     exit(0);
 }
 

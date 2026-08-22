@@ -222,6 +222,20 @@ final class StateStore
         if (is_file($file) && !unlink($file)) throw new InstallerException('Unable to remove installer state', 'STATE_WRITE_FAILED', 500);
     }
 
+    public function clearUiCache(): array
+    {
+        $removed = [];
+        foreach (scandir($this->root) ?: [] as $entry) {
+            if ($entry !== 'bootstrap.json' && !preg_match('/^asset-[a-f0-9]{64}\.(?:js|css|json|png)$/', $entry)) continue;
+            $file = $this->root . DIRECTORY_SEPARATOR . $entry;
+            if (!is_file($file)) continue;
+            if (!unlink($file)) throw new InstallerException('Unable to clear signed UI cache', 'STATE_WRITE_FAILED', 500);
+            $removed[] = $entry;
+        }
+        sort($removed, SORT_STRING);
+        return ['removed' => count($removed), 'files' => $removed];
+    }
+
     public function removeAll(): void
     {
         if (!is_dir($this->root) || is_link($this->root)) return;
