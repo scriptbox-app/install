@@ -224,11 +224,58 @@ final class StateStore
 
     public function clearUiCache(): array
     {
+        return self::clearUiCacheRoot($this->root);
+    }
+
+    public static function clearUiCachesForInstaller(
+        string $installerFile,
+        string $controlDirectory,
+        ?string $temporaryRoot = null,
+        ?string $configuredStateDirectory = null
+    ): array {
+        $installer = realpath($installerFile) ?: self::normalizedPath($installerFile);
+        $control = realpath($controlDirectory) ?: self::normalizedPath($controlDirectory);
+        $identity = substr(hash('sha256', $installer), 0, 16);
+        $configured = $configuredStateDirectory;
+        if ($configured === null) {
+            $environment = getenv('SCRIPTBOX_STATE_DIR');
+            $configured = is_string($environment) && trim($environment) !== '' ? $environment : null;
+        }
+
+        $candidates = [];
+        if ($configured !== null && trim($configured) !== '') $candidates[] = $configured;
+        $candidates[] = dirname($control) . '/.scriptbox-' . $identity;
+        if (basename($control) === 'install') {
+            $documentRoot = dirname($control);
+            $candidates[] = dirname($documentRoot) . '/.scriptbox-' . $identity;
+        }
+        $candidates[] = rtrim($temporaryRoot ?? sys_get_temp_dir(), DIRECTORY_SEPARATOR) . '/scriptbox-installer-' . $identity;
+
         $removed = [];
-        foreach (scandir($this->root) ?: [] as $entry) {
+        $locations = 0;
+        $seen = [];
+        $openBasedir = (string)ini_get('open_basedir');
+        foreach ($candidates as $candidate) {
+            $root = self::normalizedPath($candidate);
+            if (isset($seen[$root])) continue;
+            $seen[$root] = true;
+            if (!self::allowedByOpenBasedir($root, $openBasedir) || !is_dir($root) || is_link($root)) continue;
+            $result = self::clearUiCacheRoot($root);
+            $locations++;
+            foreach ($result['files'] as $file) $removed[] = $file;
+        }
+
+        sort($removed, SORT_STRING);
+        return ['removed' => count($removed), 'locations' => $locations, 'files' => $removed];
+    }
+
+    private static function clearUiCacheRoot(string $root): array
+    {
+        $removed = [];
+        foreach (scandir($root) ?: [] as $entry) {
             if ($entry !== 'bootstrap.json' && !preg_match('/^asset-[a-f0-9]{64}\.(?:js|css|json|png)$/', $entry)) continue;
-            $file = $this->root . DIRECTORY_SEPARATOR . $entry;
-            if (!is_file($file)) continue;
+            $file = $root . DIRECTORY_SEPARATOR . $entry;
+            if (!is_file($file) || is_link($file)) continue;
             if (!unlink($file)) throw new InstallerException('Unable to clear signed UI cache', 'STATE_WRITE_FAILED', 500);
             $removed[] = $entry;
         }
@@ -2263,18 +2310,18 @@ $release = defined('SCRIPTBOX_COMPILED_RELEASE') ? SCRIPTBOX_COMPILED_RELEASE : 
 $installerFile = defined('SCRIPTBOX_INSTALLER_FILE') ? SCRIPTBOX_INSTALLER_FILE : (realpath($_SERVER['SCRIPT_FILENAME'] ?? __FILE__) ?: (__FILE__));
 $controlDirectory = dirname($installerFile);
 $controlPath = defined('SCRIPTBOX_LAUNCHER') ? $controlDirectory : $installerFile;
+$command = PHP_SAPI === 'cli' ? ($argv[1] ?? 'help') : null;
+if ($command === 'clear-cache') {
+    $result = StateStore::clearUiCachesForInstaller($installerFile, $controlDirectory);
+    fwrite(STDOUT, "Cleared bootstrap and signed UI asset cache. Removed {$result['removed']} file(s) from {$result['locations']} existing cache location(s).\n");
+    fwrite(STDOUT, "The next browser request will download and verify the active signed UI release.\n");
+    exit(0);
+}
 $configuredDocumentRoot = PHP_SAPI === 'cli' ? false : realpath((string)($_SERVER['DOCUMENT_ROOT'] ?? ''));
 $target = is_string($configuredDocumentRoot) && is_dir($configuredDocumentRoot) ? $configuredDocumentRoot : $controlDirectory;
 $state = StateStore::discover($target, $installerFile);
 
 if (PHP_SAPI === 'cli') {
-    $command = $argv[1] ?? 'help';
-    if ($command === 'clear-cache') {
-        $result = $state->clearUiCache();
-        fwrite(STDOUT, "Cleared bootstrap and signed UI asset cache. Removed {$result['removed']} file(s).\n");
-        fwrite(STDOUT, "The next browser request will download and verify the active signed UI release.\n");
-        exit(0);
-    }
     if ($command === 'init') {
         $state->write('status', ['state' => 'initialized', 'phase' => 'ready', 'install_id' => bin2hex(random_bytes(16))]);
         fwrite(STDOUT, "ScriptBox installer initialized. State: {$state->root}\n");

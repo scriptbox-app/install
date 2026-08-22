@@ -173,6 +173,56 @@ test('UI cache clearing removes only signed bootstrap and asset cache files', fu
     }
 });
 
+test('CLI cache clearing reaches bundle web and temporary state without deleting installer state', function (): void {
+    $sandbox = sys_get_temp_dir() . '/scriptbox-ui-cache-locations-' . bin2hex(random_bytes(4));
+    $accountRoot = $sandbox . '/account';
+    $documentRoot = $accountRoot . '/install.example.test';
+    $controlDirectory = $documentRoot . '/install';
+    $temporaryRoot = $sandbox . '/temporary';
+    mkdir($controlDirectory, 0700, true);
+    mkdir($temporaryRoot, 0700, true);
+    $installerFile = $controlDirectory . '/install.php';
+    file_put_contents($installerFile, '<?php');
+    $identity = substr(hash('sha256', realpath($installerFile) ?: $installerFile), 0, 16);
+    $roots = [
+        $documentRoot . '/.scriptbox-' . $identity,
+        $accountRoot . '/.scriptbox-' . $identity,
+        $temporaryRoot . '/scriptbox-installer-' . $identity,
+    ];
+    $hash = str_repeat('b', 64);
+
+    try {
+        foreach ($roots as $root) {
+            mkdir($root, 0700, true);
+            file_put_contents($root . '/bootstrap.json', "{}\n");
+            file_put_contents($root . '/asset-' . $hash . '.css', 'css');
+            file_put_contents($root . '/status.json', "{}\n");
+            file_put_contents($root . '/journal.jsonl', "{}\n");
+        }
+
+        $result = StateStore::clearUiCachesForInstaller($installerFile, $controlDirectory, $temporaryRoot);
+        expect(($result['removed'] ?? null) === 6, 'cache clearing did not reach all deterministic state locations');
+        expect(($result['locations'] ?? null) === 3, 'cache clearing reported the wrong location count');
+        foreach ($roots as $root) {
+            expect(!is_file($root . '/bootstrap.json'), 'cache clearing retained a signed bootstrap');
+            expect(!is_file($root . '/asset-' . $hash . '.css'), 'cache clearing retained a signed asset');
+            expect(is_file($root . '/status.json'), 'cache clearing removed installation status');
+            expect(is_file($root . '/journal.jsonl'), 'cache clearing removed the rollback journal');
+        }
+    } finally {
+        foreach ($roots as $root) {
+            foreach (scandir($root) ?: [] as $entry) if ($entry !== '.' && $entry !== '..') @unlink($root . '/' . $entry);
+            @rmdir($root);
+        }
+        @unlink($installerFile);
+        @rmdir($controlDirectory);
+        @rmdir($documentRoot);
+        @rmdir($accountRoot);
+        @rmdir($temporaryRoot);
+        @rmdir($sandbox);
+    }
+});
+
 test('state is private, atomic, and redacts secrets', function (): void {
     $root = sys_get_temp_dir() . '/scriptbox-test-' . bin2hex(random_bytes(4));
     $store = new StateStore($root);

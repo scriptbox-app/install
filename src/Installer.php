@@ -224,11 +224,58 @@ final class StateStore
 
     public function clearUiCache(): array
     {
+        return self::clearUiCacheRoot($this->root);
+    }
+
+    public static function clearUiCachesForInstaller(
+        string $installerFile,
+        string $controlDirectory,
+        ?string $temporaryRoot = null,
+        ?string $configuredStateDirectory = null
+    ): array {
+        $installer = realpath($installerFile) ?: self::normalizedPath($installerFile);
+        $control = realpath($controlDirectory) ?: self::normalizedPath($controlDirectory);
+        $identity = substr(hash('sha256', $installer), 0, 16);
+        $configured = $configuredStateDirectory;
+        if ($configured === null) {
+            $environment = getenv('SCRIPTBOX_STATE_DIR');
+            $configured = is_string($environment) && trim($environment) !== '' ? $environment : null;
+        }
+
+        $candidates = [];
+        if ($configured !== null && trim($configured) !== '') $candidates[] = $configured;
+        $candidates[] = dirname($control) . '/.scriptbox-' . $identity;
+        if (basename($control) === 'install') {
+            $documentRoot = dirname($control);
+            $candidates[] = dirname($documentRoot) . '/.scriptbox-' . $identity;
+        }
+        $candidates[] = rtrim($temporaryRoot ?? sys_get_temp_dir(), DIRECTORY_SEPARATOR) . '/scriptbox-installer-' . $identity;
+
         $removed = [];
-        foreach (scandir($this->root) ?: [] as $entry) {
+        $locations = 0;
+        $seen = [];
+        $openBasedir = (string)ini_get('open_basedir');
+        foreach ($candidates as $candidate) {
+            $root = self::normalizedPath($candidate);
+            if (isset($seen[$root])) continue;
+            $seen[$root] = true;
+            if (!self::allowedByOpenBasedir($root, $openBasedir) || !is_dir($root) || is_link($root)) continue;
+            $result = self::clearUiCacheRoot($root);
+            $locations++;
+            foreach ($result['files'] as $file) $removed[] = $file;
+        }
+
+        sort($removed, SORT_STRING);
+        return ['removed' => count($removed), 'locations' => $locations, 'files' => $removed];
+    }
+
+    private static function clearUiCacheRoot(string $root): array
+    {
+        $removed = [];
+        foreach (scandir($root) ?: [] as $entry) {
             if ($entry !== 'bootstrap.json' && !preg_match('/^asset-[a-f0-9]{64}\.(?:js|css|json|png)$/', $entry)) continue;
-            $file = $this->root . DIRECTORY_SEPARATOR . $entry;
-            if (!is_file($file)) continue;
+            $file = $root . DIRECTORY_SEPARATOR . $entry;
+            if (!is_file($file) || is_link($file)) continue;
             if (!unlink($file)) throw new InstallerException('Unable to clear signed UI cache', 'STATE_WRITE_FAILED', 500);
             $removed[] = $entry;
         }
